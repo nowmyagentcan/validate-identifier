@@ -95,6 +95,12 @@ fn matches(pattern: &str, s: &str) -> bool {
         .any(|alt| alt.len() == s.len() && alt.bytes().zip(s.bytes()).all(|(p, c)| class(p, c)))
 }
 
+/// Whether a normalised VAT number has a known prefix and that country's format.
+pub fn format_ok(v: &str) -> bool {
+    let fits = |code| format(code).is_some_and(|(pattern, _)| matches(pattern, &v[2..]));
+    v.get(..2).is_some_and(fits) && !v.starts_with("CY12")
+}
+
 const CHECKS: [&str; 3] = ["country", "format", "check_digits"];
 
 /// Checks a normalised VAT number (compact, `GR` already rewritten to `EL`).
@@ -115,7 +121,7 @@ pub fn check(v: &str) -> Found {
         );
         return fail(0, e);
     };
-    let Some((pattern, words)) = format(code) else {
+    let Some((_, words)) = format(code) else {
         let hint = Some("Supported: EU countries (EL for Greece), XI, GB and CH.");
         return fail(
             0,
@@ -128,7 +134,7 @@ pub fn check(v: &str) -> Found {
         "EL" => "GR",
         c => c,
     };
-    if !matches(pattern, rest) || (code == "CY" && rest.starts_with("12")) {
+    if !format_ok(v) {
         let message = format!("{prefix} VAT numbers are {prefix} followed by {words}.");
         let e = Error::new(
             "vat_format",

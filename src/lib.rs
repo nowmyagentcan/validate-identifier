@@ -1,3 +1,4 @@
+pub mod detect;
 pub mod email;
 pub mod iban;
 pub mod ids;

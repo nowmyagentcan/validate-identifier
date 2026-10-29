@@ -18,6 +18,21 @@ pub enum Kind {
 const PEPPOL_SCHEME: &str = "iso6523-actorid-upis::";
 
 impl Kind {
+    /// The name in JSON and on the command line.
+    pub fn name(self) -> &'static str {
+        match self {
+            Kind::Iban => "iban",
+            Kind::Vat => "vat",
+            Kind::Phone => "phone",
+            Kind::Email => "email",
+            Kind::Lei => "lei",
+            Kind::Abn => "abn",
+            Kind::Uid => "uid",
+            Kind::Eori => "eori",
+            Kind::Peppol => "peppol",
+        }
+    }
+
     /// The value as this type's checks read it (spec §2.2).
     pub fn normalize(self, raw: &str) -> String {
         match self {
