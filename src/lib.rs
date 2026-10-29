@@ -2,6 +2,7 @@ pub mod email;
 pub mod iban;
 pub mod item;
 pub mod phone;
+pub mod vat;
 
 pub const PHONE_METADATA: &str = "9.0.42";
 pub const IBAN_REGISTRY: &str = "103";
