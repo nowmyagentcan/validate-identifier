@@ -172,6 +172,10 @@ const STATUS = { valid: ["Valid", OK, "ok"], invalid: ["Invalid", FAIL, "bad"], 
   unavailable: ["Unavailable", WAIT, ""], rate_limited: ["Rate limited", WAIT, ""], not_configured: ["Not configured", WAIT, ""] };
 const TYPES = { iban: "IBAN", vat: "VAT", phone: "Phone", email: "Email", lei: "LEI", abn: "ABN", uid: "Swiss UID", eori: "EORI", peppol: "Peppol" };
 const SETUP = { HMRC: "Set HMRC_CLIENT_ID and HMRC_CLIENT_SECRET, then start validate-identifier ui again.", "ABN Lookup": "Set ABN_LOOKUP_GUID, then start validate-identifier ui again." };
+const REFUSED = { HMRC: "Check HMRC_CLIENT_ID, HMRC_CLIENT_SECRET and VALIDATE_IDENTIFIER_HMRC_URL (sandbox credentials need the test URL), then start validate-identifier ui again.", "ABN Lookup": "Check ABN_LOOKUP_GUID, then start validate-identifier ui again." };
+// Not configured without credentials (nothing sent), or with ones the registry refused (sent).
+const UNSENT = " need your own ";
+const unsent = r => r.live?.status === "not_configured" && String(r.message).includes(UNSENT);
 // The engine's messages name CLI flags; say the same thing in the page's words.
 const forPage = s => String(s ?? "").replace(/(a|A)dd --live/g, (_, a) => a === "a" ? "turn on Live check" : "Turn on Live check")
   .replace(/(p|P)ass --type( \([^)]*\))?/g, (_, p) => p === "p" ? "pick a Type" : "Pick a Type").replace(/--region (\w+)/g, "Phone region $1").replace(/--requester/g, "Your VAT number");
@@ -185,14 +189,14 @@ function details(r) {
     r.type === "phone" && d.e164 && esc(`${d.number_type[0].toUpperCase()}${d.number_type.slice(1).replaceAll("_", " ")} · ${d.international}`),
     ...(data.participants ?? []).flatMap(p => p.document_types ?? []).map(t => esc(t.label))].filter(Boolean);
   const text = r.error ? r.error.message : r.status === "valid" && (name || facts.length) ? "" : r.message;
-  const hint = r.error?.hint ?? (r.status === "not_configured" ? SETUP[r.live?.source] : "");
+  const hint = r.error?.hint ?? (r.status === "not_configured" ? (unsent(r) ? SETUP : REFUSED)[r.live?.source] : "");
   return [name && `<span>${esc(name)}</span>`, data.address && `<small>${esc(data.address)}</small>`, ...facts.map(f => `<span>${f}</span>`),
     text && `<span>${esc(forPage(text))}</span>`, hint && `<small>${esc(forPage(hint))}</small>`].filter(Boolean).join("");
 }
 
 function source(r) {
   if (!r.live) return "This computer";
-  if (r.live.status === "not_configured") return `Not sent to ${esc(r.live.source)}`;
+  if (unsent(r)) return `Not sent to ${esc(r.live.source)}`;
   return `<span title="${esc(r.live.checked_at)}">${esc(r.live.source)} · ${esc(r.live.checked_at.slice(11, 16))} UTC</span>`;
 }
 
@@ -212,7 +216,7 @@ function done(a, wasLive) {
   shown = a.results;
   const s = a.summary;
   const counts = Object.keys(WORDS).filter(k => s[k]).map(k => `${s[k]} ${WORDS[k]}`).join(", ");
-  const sent = [...new Set(a.results.filter(r => r.live && r.live.status !== "not_configured").map(r => r.live.source === "DNS" ? "your DNS server" : r.live.source))];
+  const sent = [...new Set(a.results.filter(r => r.live && !unsent(r)).map(r => r.live.source === "DNS" ? "your DNS server" : r.live.source))];
   const where = sent.length ? `${GLOBE}<span>Sent from this computer to ${esc(list(sent))}. Nothing was stored.</span>`
     : `<span>Checked on this computer only; nothing was sent.${wasLive ? " None of these values has a registry to ask." : " Turn on Live check to ask the registries."}</span>`;
   out.innerHTML = `<div class="head"><p class="sum">${s.total} checked: ${counts}</p><div class="acts"><button type="button" data-copy>${COPY}Copy</button><button type="button" data-save>${SAVE}Save</button></div></div>`

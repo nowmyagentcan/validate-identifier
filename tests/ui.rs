@@ -7,7 +7,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::process::{Child, Stdio};
 
-use common::{Mock, command, ended, reply, stderr_of};
+use common::{GUID, HMRC_CREDS, Mock, command, ended, reply, stderr_of};
 use serde_json::{Value, json};
 
 const PAGE: &str = include_str!("../src/ui.html");
@@ -584,4 +584,35 @@ fn the_page_keeps_a_request_the_server_would_refuse_for_size() {
     let check = api.find(".size > 512 * 1024").expect("no size check");
     assert!(check < api.find("fetch(").unwrap());
     assert!(api.contains("The request is larger than 512 KB."));
+}
+
+#[test]
+fn the_page_tells_unset_credentials_from_refused_ones() {
+    // Only the first was never sent; the page reads which from the engine's message.
+    let unsent = PAGE.split("const UNSENT = \"").nth(1).unwrap();
+    let unsent = &unsent[..unsent.find('"').unwrap()];
+    let args = ["check", "GB434031439", "51824753556", "--live"];
+    let messages = |mock: &Mock, env: &[(&str, &str)]| {
+        let (_, v) = mock.json(&args, env);
+        let results = v["results"].as_array().unwrap().clone();
+        assert_eq!(results.len(), 2);
+        for r in &results {
+            assert_eq!(r["live"]["status"], "not_configured", "{r}");
+        }
+        results
+            .into_iter()
+            .map(|r| r["message"].as_str().unwrap().to_string())
+    };
+    let none = Mock::start(|_| reply(500, ""));
+    assert!(messages(&none, &[]).all(|m| m.contains(unsent)));
+    let refused = Mock::start(|r| match r.target.starts_with("/oauth/token") {
+        true => reply(401, r#"{"error":"invalid_client"}"#),
+        false => reply(
+            200,
+            r#"callback({"Message":"The GUID entered is not recognised."})"#,
+        ),
+    });
+    let env = [HMRC_CREDS[0], HMRC_CREDS[1], GUID];
+    assert!(messages(&refused, &env).all(|m| !m.contains(unsent)));
+    assert!(none.requests().is_empty());
 }
