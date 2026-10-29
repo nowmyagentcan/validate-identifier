@@ -2,6 +2,8 @@
 
 Check IBANs, VAT numbers, phone numbers, emails, LEIs, ABNs, Swiss UIDs, EORI numbers and Peppol IDs: offline by format and check digits, or live against the official registries. One small binary.
 
+![The page after checking eight values on this computer](.github/screenshot.png)
+
 ## Install
 
 Windows (PowerShell, no admin; installs to `%LOCALAPPDATA%\Programs\validate-identifier` and adds it to your user PATH):
@@ -81,14 +83,14 @@ Or add the local MCP server (stdio, one tool `validate_identifiers` taking `valu
 | Cursor (`~/.cursor/mcp.json`), Claude Desktop | `{"mcpServers":{"validate-identifier":{"command":"validate-identifier","args":["mcp"]}}}` |
 | VS Code (`.vscode/mcp.json`) | `{"servers":{"validate-identifier":{"type":"stdio","command":"validate-identifier","args":["mcp"]}}}` |
 
-The tool returns the CLI's `--json` object as `structuredContent` and as text, with at most 1,000 values per call (100 with `live`). Bad input returns `isError: true` with one text block holding `{"error":{"code","message","hint"}}`. Credentials reach it through the client's `env` setting, never through tool arguments.
+The tool returns the CLI's `--json` object as `structuredContent` and as text, with at most 1,000 values per call (100 with `live`). Bad arguments (no values, too many, an unknown type or argument) return `isError: true` with one text block holding `{"error":{"code","message","hint"}}`; an invalid identifier is a normal result, so read each result's `status`. Credentials reach it through the client's `env` setting, never through tool arguments.
 
 ## Supported inputs and limits
 
 - **IBAN:** the 104 countries of the SWIFT IBAN Registry release 103: country, length, account format and check digits, with bank and branch IDs.
 - **VAT:** the EU 27 (`EL` or `GR` for Greece), Northern Ireland (`XI`), the UK and Switzerland (`CHE…MWST`): format and check digits; Czech, Latvian and Slovak numbers by format only.
 - **Phone:** valid for its range, type (mobile, fixed line, ...), region, E.164 and national forms, from Google's libphonenumber metadata 9.0.42.
-- **Email:** RFC 5322 and 6532 syntax (UTF-8 local parts allowed), internationalised domains (UTS 46), length limits; quoted local parts and address literals pass with a warning.
+- **Email:** RFC 5322 and 6532 address syntax without comments or folding whitespace (UTF-8 local parts allowed), internationalised domains (UTS 46), length limits; quoted local parts and address literals pass with a warning.
 - **LEI** (ISO 17442), **ABN** (Australia), **Swiss UID** (`CHE-…`), **EORI** (EU, XI, GB; format only offline) and **Peppol** participant IDs (`0208:0202239951`, or a VAT number, ABN, UID or LEI with `-t peppol`, Peppol code list 9.7).
 - Limits: 256 bytes per value, 10,000 values and 4 MB per file; with `--live`, 1,000 values per run.
 - It doesn't check whether a bank account exists, whether a phone number is in service, or whether a mailbox accepts mail.
@@ -97,18 +99,20 @@ The tool returns the CLI's `--json` object as `structuredContent` and as text, w
 
 Nothing leaves your computer unless you pass `--live`, tick Live check, or an agent sets `live`. Then each value goes straight from your computer to its official source, and to nobody else:
 
-| Checks | Source and host | Credentials |
-|---|---|---|
-| EU and XI VAT | VIES, `ec.europa.eu` | none |
-| UK VAT | HMRC, `api.service.hmrc.gov.uk` | your own `HMRC_CLIENT_ID` and `HMRC_CLIENT_SECRET` |
-| Swiss VAT and UID | UID register, `www.uid-wse.admin.ch` | none |
-| ABN | ABN Lookup, `abr.business.gov.au` | your own `ABN_LOOKUP_GUID` |
-| LEI | GLEIF, `api.gleif.org` | none |
-| EU and XI EORI; GB EORI | EOS, `ec.europa.eu`; HMRC, `api.service.hmrc.gov.uk` | none |
-| Peppol | the Peppol SML over DNS, then the participant's own SMP over HTTPS | none |
-| Email | your DNS resolver (MX records of the domain) | none |
+| Checks | Source and host | What it receives | Credentials |
+|---|---|---|---|
+| EU and XI VAT | VIES, `ec.europa.eu` | the VAT number, plus your `--requester` number if you pass one | none |
+| UK VAT | HMRC, `api.service.hmrc.gov.uk` | your client ID and secret (once, for a token), then the VAT number and any `--requester` number | your own `HMRC_CLIENT_ID` and `HMRC_CLIENT_SECRET` |
+| Swiss VAT and UID | UID register, `www.uid-wse.admin.ch` | the UID | none |
+| ABN | ABN Lookup, `abr.business.gov.au` | the ABN and your GUID | your own `ABN_LOOKUP_GUID` |
+| LEI | GLEIF, `api.gleif.org` | the LEI | none |
+| EU and XI EORI; GB EORI | EOS, `ec.europa.eu`; HMRC, `api.service.hmrc.gov.uk` | the EORI number | none |
+| Peppol | your DNS resolver and the Peppol SML; then the participant's own SMP over HTTPS | a hash of the participant ID; then the ID | none |
+| Email | your DNS resolver | the domain only, never the part before @ | none |
 
-- Phone numbers and IBANs never leave the computer. Nothing is stored; the HMRC token lives in memory until the process ends. Proxies come from `HTTPS_PROXY` and `NO_PROXY`, and certificates from the system's trust store.
+- Without your own credentials, nothing goes to HMRC's VAT check or to ABN Lookup: the result is `not_configured`, with the offline answer. Beyond the table, requests carry only the User-Agent `validate-identifier/<version>`.
+- Phone numbers and IBANs never leave the computer. Nothing is stored; the HMRC token lives in memory until the process ends. Proxies come from `HTTPS_PROXY` and `NO_PROXY`, and certificates from the system's trust store. The CLI's `--dns IP[:PORT]` picks the resolver for email and Peppol; the page and the MCP server use the system's.
+- For a mirror or a test server, `VALIDATE_IDENTIFIER_VIES_URL`, `_EOS_URL`, `_HMRC_URL`, `_UID_URL`, `_ABN_URL` and `_GLEIF_URL` replace a registry's base address (https://, or http:// on 127.0.0.1, [::1] or localhost; no user name or password). The registry's own API path is appended and its own answer format expected, so a test server must imitate that API; `--debug` prints each request with secrets redacted.
 - Requests are paced to each source's published limits (VIES one per second, the UID register 20 per minute, GLEIF 60 per minute). A source that fails twice is skipped for the rest of the run. An outage gives `unavailable` or `rate_limited`, never `invalid`.
 - **HMRC:** register an application on the HMRC Developer Hub, subscribe it to "Check a UK VAT number" v2, and try it with sandbox credentials and `VALIDATE_IDENTIFIER_HMRC_URL=https://test-api.service.hmrc.gov.uk`. Production credentials need a registered organisation; HMRC reviews requests in about 10 working days.
 - **ABN Lookup:** accept the ABN Lookup web services agreement on abr.business.gov.au to receive a free GUID by email.
