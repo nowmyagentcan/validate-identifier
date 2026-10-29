@@ -175,8 +175,10 @@ pub fn eori(c: &mut Client, items: &[&Item]) -> Result<Vec<Live>, Error> {
         let v: Value = serde_json::from_str(&r.body).unwrap_or_default();
         Ok(match (r.status, v.as_array()) {
             (200, Some(list)) => {
-                let by_eori = list.iter().filter_map(|a| Some((a["eori"].as_str()?, a)));
-                let by_eori: HashMap<_, _> = by_eori.map(|(e, a)| (e.to_string(), eori_live(a))).collect();
+                let by_eori: HashMap<String, Live> = list
+                    .iter()
+                    .filter_map(|a| Some((a["eori"].as_str()?.to_string(), eori_live(a))))
+                    .collect();
                 answers.replace(Some(by_eori));
                 Live::new(HMRC.name, LiveStatus::Active, "")
             }
