@@ -130,7 +130,8 @@ fn answer(r: &Reply, with_requester: bool) -> Result<Live, Error> {
                 ..Live::new(HMRC.name, LiveStatus::Active, message)
             });
         }
-        404 => (
+        // Any other 404, as the API gateway's for a route it doesn't know, is no verdict.
+        404 if code.as_deref() == Some("NOT_FOUND") => (
             LiveStatus::NotFound,
             "HMRC has no VAT registration for this number.".to_string(),
         ),

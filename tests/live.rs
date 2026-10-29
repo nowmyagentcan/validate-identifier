@@ -2257,7 +2257,6 @@ fn never_prints_a_secret_from_a_batch_answer_or_in_its_sent_form() {
 }
 
 #[test]
-#[ignore = "known bug: R2-F03"]
 fn gleif_records_without_an_lei_are_unavailable() {
     let id = lei(1);
     let mock = Mock::start(|_| reply(200, r#"{"data":[{}]}"#));
@@ -2270,7 +2269,6 @@ fn gleif_records_without_an_lei_are_unavailable() {
 }
 
 #[test]
-#[ignore = "known bug: R2-F04"]
 fn an_hmrc_404_without_its_not_found_code_is_unavailable() {
     let gateway = json!({"code": "MATCHING_RESOURCE_NOT_FOUND", "message": "x"}).to_string();
     for body in [gateway, "<html>Not Found</html>".into()] {

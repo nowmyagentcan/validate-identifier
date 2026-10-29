@@ -37,11 +37,15 @@ pub fn ask(c: &mut Client, items: &[&Item]) -> Result<Vec<Live>, Error> {
         let v: Value = serde_json::from_str(&r.body).unwrap_or_default();
         Ok(match (r.status, v["data"].as_array()) {
             (200, Some(data)) => {
-                let by_lei = data.iter().filter_map(|d| {
+                let by_lei = data.iter().map(|d| {
                     let a = &d["attributes"];
                     Some((a["lei"].as_str()?.to_string(), a.clone()))
                 });
-                records.replace(Some(by_lei.collect::<HashMap<_, _>>()));
+                // A record without its LEI could be any of them: the answer is unreadable.
+                let Some(by_lei) = by_lei.collect::<Option<HashMap<_, _>>>() else {
+                    return Ok(unreadable(&GLEIF, &r.body));
+                };
+                records.replace(Some(by_lei));
                 Live::new(GLEIF.name, LiveStatus::Active, "")
             }
             (200, None) => unreadable(&GLEIF, &r.body),
