@@ -1,3 +1,4 @@
+pub mod email;
 pub mod iban;
 pub mod item;
 pub mod phone;
