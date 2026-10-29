@@ -1,0 +1,48 @@
+# Monthly: compares the bundled phone data, the IBAN and phone engines and the Peppol code list
+# with upstream, and opens one issue per stale source. Updating stays a reviewed commit and a
+# patch release.
+name: data-check
+on:
+  schedule:
+    - cron: '0 6 1 * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+jobs:
+  data:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Compare with upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          stale() {
+            if gh issue list --state open --limit 500 --json title --jq '.[].title' | grep -qxF "$1"; then
+              echo "open already: $1"
+            else
+              gh issue create --title "$1" --body "$2"
+            fi
+          }
+          constant() { sed -n "s/^pub const $1: &str = \"\(.*\)\";/\1/p" src/lib.rs; }
+          have=$(constant PHONE_METADATA)
+          latest=$(gh api repos/google/libphonenumber/releases/latest --jq .tag_name)
+          echo "libphonenumber: bundled v$have, latest $latest"
+          [ "v$have" = "$latest" ] || stale "Data update: libphonenumber $latest" \
+            "Bundled: v$have. Once an rlibphonenumber release carries $latest, bump its pin in Cargo.toml and PHONE_METADATA in src/lib.rs, run the tests, commit, and release a patch version."
+          for c in rlibphonenumber iban_validation_rs; do
+            have=$(sed -n "/^name = \"$c\"$/{n;s/^version = \"\(.*\)\"/\1/p}" Cargo.lock)
+            latest=$(curl -fsS -A 'validate-identifier data-check (+https://github.com/nowmyagentcan/validate-identifier)' \
+              "https://crates.io/api/v1/crates/$c" | jq -r .crate.max_stable_version)
+            echo "$c: locked $have, latest $latest"
+            [ "$have" = "$latest" ] || stale "Data update: $c $latest" \
+              "Locked: $have. Bump the pin in Cargo.toml and, if its data changed, PHONE_METADATA or IBAN_REGISTRY in src/lib.rs (the ci pins job checks them), run the tests, commit, and release a patch version."
+          done
+          have=$(constant PEPPOL_CODE_LIST)
+          latest=$(curl -fsSL https://docs.peppol.eu/edelivery/codelists/ |
+            grep -oE 'Participant identifier schemes v[0-9.]*[0-9]' | sed 's/.* v//' | sort -V | tail -1)
+          test -n "$latest"
+          echo "Peppol code list: built from v$have, latest v$latest"
+          [ "$have" = "$latest" ] || stale "Data update: Peppol code list v$latest" \
+            "The Peppol scheme table in src/peppol.rs follows code list v$have. Compare the participant identifier schemes of v$latest, update the table and PEPPOL_CODE_LIST in src/lib.rs, run the tests, commit, and release a patch version."
