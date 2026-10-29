@@ -28,8 +28,11 @@ fn run(args: &[&str]) -> (i32, String, String) {
 
 /// The `--json` answer: one line on stdout, nothing on stderr.
 fn json(args: &[&str]) -> (i32, Value) {
-    let args = [args, &["--json"]].concat();
-    let (code, out, err) = run(&args);
+    json_of(&[args, &["--json"]].concat())
+}
+
+fn json_of(args: &[&str]) -> (i32, Value) {
+    let (code, out, err) = run(args);
     assert_eq!(err, "", "{args:?}");
     assert_eq!(out.matches('\n').count(), 1, "one line: {out}");
     (code, serde_json::from_str(&out).unwrap())
@@ -410,4 +413,468 @@ fn shows_timings_with_debug() {
     let (_, plain, _) = run(&["check", "-f", path]);
     let (_, debugged, _) = run(&["check", "-f", path, "--debug"]);
     assert_eq!(plain, debugged);
+}
+
+/// The command line that checks one value, which may start with a dash, with `args`.
+fn one(value: &str, args: &[&str]) -> Vec<String> {
+    let args = [&["check"][..], args, &["--", value]].concat();
+    args.into_iter().map(String::from).collect()
+}
+
+/// The JSON item for one value checked with `args`.
+fn item(value: &str, args: &[&str]) -> (i32, Value) {
+    let line = one(value, &[args, &["--json"]].concat());
+    let (code, v) = json_of(&line.iter().map(String::as_str).collect::<Vec<_>>());
+    (code, v["results"][0].clone())
+}
+
+#[test]
+fn checks_every_type_offline() {
+    let cases: [(&str, &[&str], &str, Value); 9] = [
+        (
+            "DE44 5001 0517 5407 3249 31",
+            &[],
+            "iban",
+            json!({"country": "DE", "bban": "500105175407324931", "bank_id": "50010517", "branch_id": null, "print": "DE44 5001 0517 5407 3249 31"}),
+        ),
+        (
+            "GR 094 543 092",
+            &[],
+            "vat",
+            json!({"prefix": "EL", "number": "094543092", "branch": null}),
+        ),
+        (
+            "+44 20 7946 0958 ext. 12",
+            &[],
+            "phone",
+            json!({"e164": "+442079460958", "international": "+44 20 7946 0958 x12", "national": "020 7946 0958 x12", "region": "GB", "country_code": 44, "number_type": "fixed_line", "possible": true, "extension": "12"}),
+        ),
+        (
+            "jane@bücher.de",
+            &[],
+            "email",
+            json!({"local": "jane", "domain": "bücher.de", "ascii_domain": "xn--bcher-kva.de", "smtputf8": false}),
+        ),
+        ("5493001KJTIIGC8Y1R12", &[], "lei", json!({})),
+        ("51 824 753 556", &[], "abn", json!({})),
+        (
+            "CHE-100.000.006",
+            &[],
+            "uid",
+            json!({"display": "CHE-100.000.006"}),
+        ),
+        ("GB220430231000", &["-t", "eori"], "eori", json!({})),
+        (
+            "0208:0202239951",
+            &[],
+            "peppol",
+            json!({"candidates": ["0208:0202239951"]}),
+        ),
+    ];
+    for (value, args, kind, details) in cases {
+        let (code, i) = item(value, args);
+        assert_eq!(code, 0, "{value}: {i}");
+        assert_eq!(
+            (i["type"].as_str(), i["status"].as_str()),
+            (Some(kind), Some("valid")),
+            "{value}"
+        );
+        assert_eq!(i["checked"], "offline");
+        assert_eq!(i["details"], details, "{value}");
+        assert_eq!((&i["live"], &i["error"]), (&Value::Null, &Value::Null));
+        assert_eq!(i["offline"]["valid"], true);
+    }
+    // The spec's reference values.
+    for (value, args, kind) in [
+        ("51 824 753 556", &[][..], "abn"),
+        ("CHE-116.281.710", &[], "uid"),
+        ("CHE-100.000.006", &[], "uid"),
+        ("CHE-116.281.710 MWST", &[], "vat"),
+        ("5493001KJTIIGC8Y1R12", &[], "lei"),
+        ("IE8256796U", &["-t", "eori"], "eori"),
+        ("GB220430231000", &["-t", "eori"], "eori"),
+        ("BE0202239951", &["-t", "peppol"], "peppol"),
+    ] {
+        let (code, i) = item(value, args);
+        assert_eq!((code, i["type"].as_str()), (0, Some(kind)), "{value}");
+    }
+    let (_, i) = item("IE8256796U", &["-t", "eori"]);
+    assert_eq!(
+        i["message"],
+        "Format only: EORI numbers have no check digit. Add --live to confirm."
+    );
+    assert_eq!(i["country"], "IE");
+}
+
+#[test]
+fn detects_types_and_flags_ambiguous_values() {
+    for (value, kind) in [
+        ("jane@example.com", "email"),
+        ("+44 20 7946 0958", "phone"),
+        ("iso6523-actorid-upis::0208:0202239951", "peppol"),
+        ("CHE-116.281.710 MWST", "vat"),
+        ("CHE-116.281.710", "uid"),
+        ("DE44500105175407324931", "iban"),
+        ("5493001KJTIIGC8Y1R12", "lei"),
+        ("DE136695976", "vat"),
+        ("GB2204302310001", "eori"),
+        ("51824753556", "abn"),
+        ("GB82WEST1234569876543", "iban"),
+    ] {
+        assert_eq!(item(value, &[]).1["type"], kind, "{value}");
+    }
+    let (_, i) = item("020 7946 0958", &["-r", "GB"]);
+    assert_eq!(i["type"], "phone");
+    let (_, i) = item("DE136695976", &[]);
+    assert_eq!(
+        i["warnings"],
+        json!([{"code": "ambiguous_type", "message": "Also a valid eori format; pass --type to check it as one."}])
+    );
+    let (code, i) = item("DEADBEEF", &[]);
+    assert_eq!(code, 1);
+    assert_eq!(
+        (&i["type"], &i["value"], &i["country"]),
+        (&Value::Null, &Value::Null, &Value::Null)
+    );
+    assert_eq!(i["error"]["code"], "unknown_type");
+}
+
+#[test]
+fn reaches_every_item_error_with_its_message_and_hint() {
+    let long = format!("{}@example.com", "a".repeat(65));
+    let label = "a".repeat(63);
+    let near_limit = format!("j@{label}.{label}.{label}.{}.com", "b".repeat(57));
+    let too_long = "1".repeat(257);
+    // value, options, code, message, hint
+    type Case<'a> = (&'a str, &'a [&'a str], &'a str, &'a str, Option<&'a str>);
+    let cases: Vec<Case> = vec![
+        (
+            "",
+            &[],
+            "empty",
+            "Empty value.",
+            Some("Pass an identifier, e.g. DE136695976."),
+        ),
+        (
+            &too_long,
+            &[],
+            "too_long",
+            "Value is longer than 256 characters.",
+            Some("Pass one identifier per value."),
+        ),
+        (
+            "hello",
+            &[],
+            "unknown_type",
+            "Can't tell what kind of identifier this is.",
+            Some("Pass --type (iban, vat, phone, email, lei, abn, uid, eori, peppol)."),
+        ),
+        (
+            "XX44500105175407324931",
+            &["-t", "iban"],
+            "iban_country",
+            "XX isn't an IBAN country.",
+            Some("An IBAN starts with a country code from the IBAN registry, e.g. DE."),
+        ),
+        (
+            "DE4450010517540732493",
+            &[],
+            "iban_length",
+            "Wrong length for a DE IBAN (21 characters).",
+            Some("Check for a missing or extra character."),
+        ),
+        (
+            "GB82WEST123456987654A2",
+            &[],
+            "iban_format",
+            "This doesn't match the account format for GB.",
+            Some("Check for letters where digits belong."),
+        ),
+        (
+            "DE44500105175407324932",
+            &[],
+            "iban_check_digits",
+            "The IBAN check digits don't match.",
+            Some("Check for a typo or swapped digits."),
+        ),
+        (
+            "XX123456789",
+            &["-t", "vat"],
+            "vat_country",
+            "No VAT rules for XX.",
+            Some("Supported: EU countries (EL for Greece), XI, GB and CH."),
+        ),
+        (
+            "123456789",
+            &["-t", "vat"],
+            "vat_prefix",
+            "A VAT number needs its country prefix.",
+            Some("Write it as e.g. DE136695976."),
+        ),
+        (
+            "DE12345678",
+            &["-t", "vat"],
+            "vat_format",
+            "DE VAT numbers are DE followed by 9 digits.",
+            Some("Check the number on the invoice or registration."),
+        ),
+        (
+            "DE136695977",
+            &[],
+            "vat_check_digits",
+            "The check digits don't match for a DE VAT number.",
+            Some("Check for a typo, or add --live to ask VIES."),
+        ),
+        (
+            "07911 123456",
+            &["-t", "phone"],
+            "phone_region",
+            "A phone number without + needs a region.",
+            Some("Add --region GB, or write it as +44…."),
+        ),
+        (
+            "+hello",
+            &[],
+            "phone_parse",
+            "This isn't a phone number.",
+            Some("Write it in international form, e.g. +44 20 7946 0958."),
+        ),
+        (
+            "+999 123",
+            &[],
+            "phone_parse",
+            "+999 isn't a country calling code.",
+            Some("Write it in international form, e.g. +44 20 7946 0958."),
+        ),
+        (
+            "+44 1",
+            &[],
+            "phone_parse",
+            "Too short to be a phone number.",
+            Some("Write it in international form, e.g. +44 20 7946 0958."),
+        ),
+        (
+            "+44 123456789012345678901",
+            &[],
+            "phone_parse",
+            "Too long to be a phone number.",
+            Some("Write it in international form, e.g. +44 20 7946 0958."),
+        ),
+        (
+            "+44 1234567890123456",
+            &[],
+            "phone_invalid",
+            "+44 1234567890123456 isn't a valid number in GB.",
+            Some("Check the number of digits and the area code."),
+        ),
+        (
+            "+44 1632 960000",
+            &[],
+            "phone_invalid",
+            "+44 1632 960000 has the right length for GB but isn't in an assigned range.",
+            Some("Check the number of digits and the area code."),
+        ),
+        (
+            "Jane <jane@example.com>",
+            &[],
+            "email_display_name",
+            "Pass only the address, without a name.",
+            Some("e.g. jane@example.com"),
+        ),
+        (
+            "jane.example.com",
+            &["-t", "email"],
+            "email_at",
+            "An email address has exactly one @.",
+            None,
+        ),
+        (
+            ".jane@example.com",
+            &[],
+            "email_local",
+            "The part before @ isn't valid (dot at the start or end, two dots, or a forbidden character).",
+            None,
+        ),
+        (
+            &long,
+            &[],
+            "email_length",
+            "The part before @ is longer than 64 bytes.",
+            None,
+        ),
+        (
+            &near_limit,
+            &[],
+            "email_length",
+            "The address is longer than 254 bytes.",
+            None,
+        ),
+        (
+            "jane@-example.com",
+            &[],
+            "email_domain",
+            "The domain isn't valid: a part between dots starts or ends with a hyphen.",
+            Some("Check the spelling after the @."),
+        ),
+        (
+            "5493001KJTIIGC8Y1R1",
+            &["-t", "lei"],
+            "lei_format",
+            "An LEI is 18 letters or digits followed by 2 check digits.",
+            None,
+        ),
+        (
+            "5493001KJTIIGC8Y1R13",
+            &[],
+            "lei_check_digits",
+            "The LEI check digits don't match.",
+            Some("Check for a typo, or add --live to ask GLEIF."),
+        ),
+        (
+            "5182475355",
+            &["-t", "abn"],
+            "abn_format",
+            "An ABN is 11 digits.",
+            None,
+        ),
+        (
+            "51824753557",
+            &["-t", "abn"],
+            "abn_check_digits",
+            "The ABN check digits don't match.",
+            Some("Check for a typo, or add --live to ask ABN Lookup."),
+        ),
+        (
+            "CHE11628171",
+            &["-t", "uid"],
+            "uid_format",
+            "A Swiss UID is CHE followed by 9 digits.",
+            Some("e.g. CHE-116.281.710"),
+        ),
+        (
+            "CHE-116.281.711",
+            &[],
+            "uid_check_digits",
+            "The UID check digit doesn't match.",
+            None,
+        ),
+        (
+            "CHE-100.000.800",
+            &[],
+            "uid_check_digits",
+            "No UID has this number; its check digit would be 10.",
+            None,
+        ),
+        (
+            "GB123",
+            &["-t", "eori"],
+            "eori_format",
+            "A GB EORI is GB followed by 12 to 15 digits.",
+            None,
+        ),
+        (
+            "DE1234567890123456",
+            &["-t", "eori"],
+            "eori_format",
+            "An EORI is a country code followed by up to 15 letters or digits.",
+            None,
+        ),
+        (
+            "EL123",
+            &["-t", "eori"],
+            "eori_country",
+            "EL isn't an EU country, GB or XI.",
+            None,
+        ),
+        (
+            "hello",
+            &["-t", "peppol"],
+            "peppol_format",
+            "A Peppol participant ID looks like 0208:0202239951 (4-digit scheme code, colon, value).",
+            Some("Or pass a VAT number, ABN, Swiss UID or LEI with --type peppol."),
+        ),
+        (
+            "XI434031439",
+            &["-t", "peppol"],
+            "peppol_no_scheme",
+            "XI VAT numbers have no Peppol scheme.",
+            Some("Pass the participant ID, e.g. 0088:<GLN>."),
+        ),
+    ];
+    for (value, args, code, message, hint) in cases {
+        let (exit, i) = item(value, args);
+        assert_eq!(exit, 1, "{value}");
+        assert_eq!(i["status"], "invalid", "{value}");
+        assert_eq!(
+            i["error"],
+            json!({"code": code, "message": message, "hint": hint}),
+            "{value}"
+        );
+        assert_eq!(i["message"], message);
+        assert_eq!(i["offline"]["valid"], false);
+        // Text shows the message on the value's line and the hint under it.
+        let line = one(value, args);
+        let (_, out, _) = run(&line.iter().map(String::as_str).collect::<Vec<_>>());
+        assert!(out.contains(&format!("invalid · {message}\n")), "{out}");
+        if let Some(hint) = hint {
+            assert!(out.contains(&format!("  {hint}\n")), "{out}");
+        }
+    }
+}
+
+#[test]
+fn reaches_every_offline_warning() {
+    for (value, code, message) in [
+        (
+            "DE136695976",
+            "ambiguous_type",
+            "Also a valid eori format; pass --type to check it as one.",
+        ),
+        (
+            "\"jane doe\"@example.com",
+            "quoted_local_part",
+            "Quoted local parts are valid but many mail systems reject them.",
+        ),
+        (
+            "jane@[192.0.2.1]",
+            "address_literal",
+            "The domain is an IP address; mail server lookup skipped.",
+        ),
+    ] {
+        let (exit, i) = item(value, &[]);
+        assert_eq!((exit, &i["status"]), (0, &json!("valid")), "{value}");
+        assert_eq!(i["warnings"], json!([{"code": code, "message": message}]));
+        let (_, out, _) = run(&["check", value]);
+        assert!(out.ends_with(&format!("\n  ! {message}\n")), "{out}");
+    }
+}
+
+#[test]
+fn turns_away_bad_usage_with_exit_2() {
+    for args in [
+        &["nope"][..],
+        &["check", "x", "--nope"],
+        &["check", "x", "-t", "bic"],
+        &["check", "x", "-f", "y"],
+        &["check"],
+        &["check", "x", "-r"],
+        &["check", "-f"],
+        &["check", "x", "--live"],
+    ] {
+        let (code, out, err) = run(args);
+        assert_eq!((code, out.as_str()), (2, ""), "{args:?}");
+        assert!(err.starts_with("error: "), "{args:?}: {err}");
+        assert!(
+            err.ends_with("For more information, try '--help'.\n"),
+            "{args:?}: {err}"
+        );
+    }
+    for region in ["XX", "G", "GBR", "001", "1"] {
+        let (code, out, err) = run(&["check", "x", "-r", region]);
+        assert_eq!((code, out.as_str()), (2, ""), "{region}");
+        assert_eq!(
+            err,
+            format!("✗ Unknown region {region}.\n  Use a 2-letter ISO country code, e.g. GB.\n")
+        );
+    }
 }
