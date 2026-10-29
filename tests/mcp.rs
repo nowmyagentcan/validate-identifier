@@ -5,7 +5,7 @@ mod common;
 use std::io::Write;
 use std::process::Stdio;
 
-use common::{Mock, command, reply};
+use common::{Mock, command, ended, reply, stderr_of};
 use serde_json::{Value, json};
 
 const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#;
@@ -293,4 +293,58 @@ fn ends_when_stdin_closes() {
         (out.status.code(), out.stdout.len(), out.stderr.len()),
         (Some(0), 0, 0)
     );
+}
+
+#[test]
+fn ends_quietly_when_stdout_closes() {
+    // The read end closes before the spawn: dropped after it, a test spawning beside this
+    // one could still hold a copy when the server writes.
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let mut child = command(&["mcp"], &[])
+        .stdin(Stdio::piped())
+        .stdout(writer)
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let _ = writeln!(stdin, "{INITIALIZE}");
+    let code = ended(&mut child);
+    drop(stdin);
+    assert_eq!((code, stderr_of(&mut child)), (Some(0), String::new()));
+}
+
+#[test]
+fn ends_quietly_when_the_client_leaves_mid_session() {
+    let values = vec!["DE44500105175407324931"; 1000];
+    let big = call(2, json!({ "values": values })).to_string();
+    for half_line in [true, false] {
+        let mut child = command(&["mcp"], &[])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        writeln!(stdin, "{INITIALIZE}").unwrap();
+        writeln!(
+            stdin,
+            r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#
+        )
+        .unwrap();
+        if half_line {
+            // The client dies halfway through a message.
+            write!(stdin, "{}", &big[..40]).unwrap();
+        } else {
+            // The client stops reading while a large answer is on its way, then leaves.
+            writeln!(stdin, "{big}").unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            drop(child.stdout.take());
+        }
+        drop(stdin);
+        let code = ended(&mut child);
+        let err = stderr_of(&mut child);
+        assert!(!err.contains("panicked"), "{err}");
+        assert_eq!(code, Some(0), "{err}");
+    }
 }

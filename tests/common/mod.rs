@@ -291,3 +291,29 @@ pub fn closed_udp_port() -> String {
         .unwrap()
         .to_string()
 }
+
+/// The exit code once `child` ends, waiting up to 10 s; `None` (after killing it) if it
+/// doesn't.
+pub fn ended(child: &mut std::process::Child) -> Option<i32> {
+    for _ in 0..500 {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status.code();
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    child.kill().unwrap();
+    child.wait().unwrap();
+    None
+}
+
+/// What `child` wrote to stderr.
+pub fn stderr_of(child: &mut std::process::Child) -> String {
+    let mut err = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut err)
+        .unwrap();
+    err
+}

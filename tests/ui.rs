@@ -7,7 +7,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::process::{Child, Stdio};
 
-use common::{Mock, command, reply};
+use common::{Mock, command, ended, reply, stderr_of};
 use serde_json::{Value, json};
 
 const PAGE: &str = include_str!("../src/ui.html");
@@ -454,4 +454,114 @@ fn opens_the_browser_unless_told_not_to() {
     let port = start(&[]);
     assert_eq!(opened_url(), Some(format!("http://127.0.0.1:{port}\n")));
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn ends_quietly_when_stdout_closes() {
+    // The read end closes before the spawn, so no test spawning beside this one holds it.
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let mut child = command(&["ui", "--no-open"], &[])
+        .stdout(writer)
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    assert_eq!(
+        (ended(&mut child), stderr_of(&mut child)),
+        (Some(0), String::new())
+    );
+}
+
+#[test]
+fn keeps_serving_when_clients_hang_up() {
+    let vies = json!({
+        "countryCode": "DE", "vatNumber": "136695976", "requestDate": "2026-10-29T10:12:03.524Z",
+        "valid": true, "requestIdentifier": "", "name": "EXAMPLE GMBH", "address": "1 TEST STREET"
+    });
+    // A registry that takes its time, so the page's client is gone before the answer.
+    let mock = Mock::start(move |_| {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        reply(200, vies.to_string())
+    });
+    let mut child = command(&["ui", "--no-open"], &mock.env())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let port: u16 = line
+        .trim_end()
+        .trim_end_matches("  (Ctrl+C to stop)")
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let post = |body: &str| {
+        format!(
+            "POST /api HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    };
+    let offline = post(r#"{"values":["DE44500105175407324931"]}"#);
+    let live = post(r#"{"values":["DE136695976"],"live":true}"#);
+    let connect = || TcpStream::connect(("127.0.0.1", port)).unwrap();
+    // Leaves after half the headers, after half the body, before reading the answer, and
+    // while a live check is still running.
+    connect().write_all(&offline.as_bytes()[..20]).unwrap();
+    connect()
+        .write_all(&offline.as_bytes()[..offline.len() - 5])
+        .unwrap();
+    for request in [&offline, &live] {
+        for _ in 0..10 {
+            let mut s = connect();
+            s.write_all(request.as_bytes()).unwrap();
+            s.shutdown(Shutdown::Both).unwrap();
+        }
+    }
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let mut s = connect();
+    s.write_all(offline.as_bytes()).unwrap();
+    let mut answer = String::new();
+    s.read_to_string(&mut answer).unwrap();
+    assert!(answer.starts_with("HTTP/1.1 200 OK\r\n"), "{answer}");
+    assert!(answer.contains(r#""status":"valid""#));
+    assert_eq!(child.try_wait().unwrap(), None, "the server stopped");
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(stderr_of(&mut child), "");
+}
+
+#[test]
+fn runs_with_stderr_closed() {
+    let mut child = command(&["ui", "--no-open"], &[])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stderr.take());
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert!(line.starts_with("Open http://127.0.0.1:"), "{line}");
+    let port = line.trim_end().trim_end_matches("  (Ctrl+C to stop)");
+    let port = port.rsplit(':').next().unwrap();
+    // The port stays taken by the first server while a second one asks for it.
+    let mut busy = command(&["ui", "--no-open", "--port", port], &[])
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(busy.stderr.take());
+    assert_eq!(ended(&mut busy), Some(3));
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let out = command(&["mcp"], &[])
+        .stderr(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
 }
