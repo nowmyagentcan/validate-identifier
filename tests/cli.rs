@@ -325,12 +325,14 @@ fn shows_the_sentence_types_and_examples_in_help() {
 }
 
 /// A list long enough that its answer overflows any pipe buffer.
+/// Written once: tests running side by side would otherwise read it while another rewrites it.
 fn long_list() -> String {
-    let path = file(
-        "long.txt",
-        "DE44500105175407324931\nhello\n".repeat(3000).as_bytes(),
-    );
-    path.to_str().unwrap().to_string()
+    static LONG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    LONG.get_or_init(|| {
+        let list = "DE44500105175407324931\nhello\n".repeat(3000);
+        file("long.txt", list.as_bytes()).to_str().unwrap().into()
+    })
+    .clone()
 }
 
 #[test]
