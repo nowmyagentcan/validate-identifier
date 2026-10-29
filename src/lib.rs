@@ -4,6 +4,7 @@ pub mod email;
 pub mod iban;
 pub mod ids;
 pub mod item;
+pub mod live;
 pub mod peppol;
 pub mod phone;
 pub mod text;

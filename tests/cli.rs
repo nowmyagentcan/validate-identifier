@@ -406,10 +406,7 @@ fn shows_timings_with_debug() {
         lines[0].starts_with(&format!("debug: read 2 values from {path} in ")),
         "{err}"
     );
-    assert!(
-        lines[1].starts_with("debug: checked 2 values offline in "),
-        "{err}"
-    );
+    assert!(lines[1].starts_with("debug: checked 2 values in "), "{err}");
     let (_, plain, _) = run(&["check", "-f", path]);
     let (_, debugged, _) = run(&["check", "-f", path, "--debug"]);
     assert_eq!(plain, debugged);

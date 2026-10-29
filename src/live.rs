@@ -1,0 +1,371 @@
+//! The registries' HTTP client: the OS trust store, proxies from the environment, base URL
+//! overrides, pacing per source, a 1 MiB answer cap and no redirects. `--debug` lines go to
+//! stderr with every secret replaced by REDACTED.
+
+use std::collections::HashMap;
+use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use ureq::Agent;
+use ureq::http::Request;
+use ureq::tls::{RootCerts, TlsConfig};
+
+use crate::check::usage;
+use crate::item::{Error, Live, LiveStatus};
+
+/// One registry: its name in results, its base URL override, its default base and the least
+/// time between two request starts (spec §7.2).
+pub struct Source {
+    pub name: &'static str,
+    pub var: &'static str,
+    pub base: &'static str,
+    pub gap: Duration,
+}
+
+pub const USER_AGENT: &str = concat!(
+    "validate-identifier/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/nowmyagentcan/validate-identifier)"
+);
+
+/// The largest answer read; a larger one is `unavailable`.
+const LIMIT: u64 = 1 << 20;
+
+static DEBUG: AtomicBool = AtomicBool::new(false);
+static SECRETS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+pub fn set_debug(on: bool) {
+    DEBUG.store(on, Ordering::Relaxed);
+}
+
+/// Keeps `s` out of every `--debug` line.
+pub fn secret(s: &str) {
+    if !s.is_empty() {
+        SECRETS.lock().unwrap().push(s.into());
+    }
+}
+
+/// A `--debug` line on stderr, secrets redacted; a closed stderr loses it quietly.
+pub fn debug(line: impl Into<String>) {
+    if DEBUG.load(Ordering::Relaxed) {
+        let mut line = line.into();
+        for s in SECRETS.lock().unwrap().iter() {
+            line = line.replace(s.as_str(), "REDACTED");
+        }
+        let _ = writeln!(anstream::stderr(), "debug: {line}");
+    }
+}
+
+/// An HTTP answer, any status.
+pub struct Reply {
+    pub status: u16,
+    pub body: String,
+    /// `Retry-After` in seconds.
+    pub retry_after: Option<u64>,
+}
+
+pub struct Client {
+    agent: Agent,
+    bases: HashMap<&'static str, String>,
+    last: HashMap<&'static str, Instant>,
+    start: Instant,
+}
+
+impl Client {
+    /// A client for `sources`; a bad base URL override is a usage error.
+    pub fn new(sources: &[&Source]) -> Result<Self, Error> {
+        let bases = sources
+            .iter()
+            .map(|s| Ok((s.name, base(s, std::env::var(s.var).ok())?)))
+            .collect::<Result<_, Error>>()?;
+        let ring = Arc::new(rustls::crypto::ring::default_provider());
+        let tls = TlsConfig::builder()
+            .root_certs(RootCerts::PlatformVerifier)
+            .unversioned_rustls_crypto_provider(ring)
+            .build();
+        let agent = Agent::config_builder()
+            .tls_config(tls)
+            .user_agent(USER_AGENT)
+            .http_status_as_error(false)
+            .max_redirects(0)
+            .timeout_connect(Some(Duration::from_secs(5)))
+            .timeout_global(Some(Duration::from_secs(20)))
+            .build()
+            .into();
+        Ok(Client {
+            agent,
+            bases,
+            last: HashMap::new(),
+            start: Instant::now(),
+        })
+    }
+
+    /// `path` at `s`'s base URL.
+    pub fn url(&self, s: &Source, path: &str) -> String {
+        format!("{}{path}", self.bases[s.name])
+    }
+
+    /// Sends one request once `s`'s gap since its last request start has passed.
+    #[expect(clippy::result_large_err, reason = "one per paced request")]
+    pub fn send(&mut self, s: &Source, req: Request<Vec<u8>>) -> Result<Reply, Live> {
+        if let Some(last) = self.last.get(s.name) {
+            std::thread::sleep(s.gap.saturating_sub(last.elapsed()));
+        }
+        let at = Instant::now();
+        self.last.insert(s.name, at);
+        let since = (at - self.start).as_secs_f64();
+        debug(format!(
+            "{} {} {} (+{since:.3} s)",
+            s.name,
+            req.method(),
+            req.uri()
+        ));
+        let host = req.uri().host().unwrap_or_default().to_string();
+        let answer = self.agent.run(req).and_then(|mut r| {
+            let body = r.body_mut().with_config().limit(LIMIT).read_to_string()?;
+            Ok((r, body))
+        });
+        let ms = at.elapsed().as_millis();
+        match answer {
+            Ok((r, body)) => {
+                let header = |name| r.headers().get(name).and_then(|v| v.to_str().ok());
+                let kind = header("content-type").unwrap_or("no content type");
+                let n = body.len();
+                debug(format!(
+                    "{} HTTP {} {kind}, {n} bytes in {ms} ms",
+                    s.name,
+                    r.status()
+                ));
+                Ok(Reply {
+                    status: r.status().as_u16(),
+                    retry_after: header("retry-after").and_then(|v| v.trim().parse().ok()),
+                    body,
+                })
+            }
+            Err(e) => {
+                debug(format!("{} failed in {ms} ms: {e}", s.name));
+                let proxy = self.agent.config().proxy().map(|p| p.host().to_string());
+                Err(failure(s, &host, proxy.as_deref(), e))
+            }
+        }
+    }
+}
+
+/// `s`'s base URL: its override `url` when set, which must be https://, or http:// to this
+/// computer.
+fn base(s: &Source, url: Option<String>) -> Result<String, Error> {
+    let Some(url) = url.filter(|v| !v.is_empty()) else {
+        return Ok(s.base.into());
+    };
+    let url = url.trim_end_matches('/');
+    let ok = match url.strip_prefix("http://") {
+        Some(rest) => {
+            let host = rest.split('/').next().unwrap_or_default();
+            let port =
+                |(_, p): &(&str, &str)| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit());
+            let host = host.rsplit_once(':').filter(port).map_or(host, |(h, _)| h);
+            ["127.0.0.1", "[::1]", "localhost"].contains(&host)
+        }
+        None => url.len() > "https://".len() && url.starts_with("https://"),
+    };
+    if !ok {
+        let message = format!(
+            "{} must start with https:// (http:// only for 127.0.0.1, [::1] or localhost).",
+            s.var
+        );
+        return Err(usage(
+            message,
+            "Fix it, or unset it to use the official address.",
+        ));
+    }
+    Ok(url.into())
+}
+
+/// `unavailable` from `s`, with what to tell people.
+pub fn unavailable(s: &Source, message: impl Into<String>) -> Live {
+    Live::new(s.name, LiveStatus::Unavailable, message)
+}
+
+/// `unavailable` for an answer that isn't in the source's documented shape.
+pub fn unreadable(s: &Source, body: &str) -> Live {
+    let head: String = body.chars().take(500).collect();
+    debug(format!("{} answer we couldn't read: {head}", s.name));
+    unavailable(s, format!("{} sent a response we couldn't read.", s.name))
+}
+
+/// What a request that got no HTTP answer means, re-worded so no URL or secret leaks.
+fn failure(s: &Source, host: &str, proxy: Option<&str>, e: ureq::Error) -> Live {
+    use ureq::Error as E;
+    use ureq::Timeout as T;
+    let reach = |why: &str, retries| Live {
+        retries,
+        ..unavailable(
+            s,
+            format!("Couldn't reach {host}: {why}. This is not a verdict on the number."),
+        )
+    };
+    match e {
+        E::Timeout(T::Connect | T::Resolve) => reach("no answer within 5 s", 0),
+        E::Timeout(_) => unavailable(s, format!("{} took longer than 20 s.", s.name)),
+        E::HostNotFound => reach("host not found", 0),
+        E::Io(e) => reach(&e.kind().to_string(), 1),
+        E::ConnectionFailed => reach("connection failed", 1),
+        E::ConnectProxyFailed(_) | E::InvalidProxyUrl => reach(
+            &format!("proxy error at {}", proxy.unwrap_or("the proxy")),
+            1,
+        ),
+        E::Tls(why) => certificate(s, host, why),
+        E::Rustls(why) => certificate(s, host, &why.to_string()),
+        E::BodyExceedsLimit(_) => {
+            unavailable(s, format!("{} sent more data than expected.", s.name))
+        }
+        _ => unreadable(s, ""),
+    }
+}
+
+fn certificate(s: &Source, host: &str, why: &str) -> Live {
+    unavailable(s, format!("Couldn't verify {host}'s certificate: {why}."))
+}
+
+impl Reply {
+    /// What an HTTP status the source doesn't document means: a 429 is `rate_limited`,
+    /// anything else `unavailable`; 5xx and short 429 waits may be tried again.
+    pub fn failed(&self, s: &Source) -> Live {
+        let code = Some(self.status.to_string());
+        if self.status == 429 {
+            let wait = match self.retry_after {
+                Some(n) => format!("Try again in {n} s."),
+                None => "Try again in a minute.".into(),
+            };
+            let message = format!("{} asked us to slow down (429). {wait}", s.name);
+            return Live {
+                code,
+                retry_after: self.retry_after,
+                retries: u32::from(self.retry_after.is_none_or(|n| n <= 30)),
+                ..Live::new(s.name, LiveStatus::RateLimited, message)
+            };
+        }
+        let what = match self.status {
+            300..=399 => "redirected the request",
+            _ => "answered",
+        };
+        Live {
+            code,
+            retries: u32::from(self.status >= 500),
+            ..unavailable(
+                s,
+                format!(
+                    "{} {what} (HTTP {}). This is not a verdict on the number.",
+                    s.name, self.status
+                ),
+            )
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST: Source = Source {
+        name: "Test",
+        var: "VALIDATE_IDENTIFIER_TEST_URL",
+        base: "https://example.org",
+        gap: Duration::from_millis(50),
+    };
+
+    #[test]
+    fn overrides_need_https_unless_they_stay_on_this_computer() {
+        let with = |url: &str| base(&TEST, Some(url.into()));
+        for ok in [
+            "http://127.0.0.1:8080",
+            "http://[::1]",
+            "http://localhost:1/",
+            "https://mirror.example.org/vies",
+        ] {
+            assert_eq!(with(ok).unwrap(), ok.trim_end_matches('/'), "{ok}");
+        }
+        for bad in [
+            "http://example.org",
+            "http://127.0.0.1.example.org",
+            "http://127.0.0.1@example.org",
+            "ftp://127.0.0.1",
+            "https://",
+            "example.org",
+        ] {
+            let e = with(bad).unwrap_err();
+            assert_eq!(e.code, "usage", "{bad}");
+            assert!(
+                e.message
+                    .starts_with("VALIDATE_IDENTIFIER_TEST_URL must start with https://")
+            );
+        }
+        assert_eq!(with("").unwrap(), "https://example.org");
+    }
+
+    #[test]
+    fn undocumented_statuses_never_become_a_verdict() {
+        let reply = |status, retry_after| Reply {
+            status,
+            body: String::new(),
+            retry_after,
+        };
+        let busy = reply(429, Some(30)).failed(&TEST);
+        assert_eq!(busy.status, LiveStatus::RateLimited);
+        assert_eq!(
+            busy.message,
+            "Test asked us to slow down (429). Try again in 30 s."
+        );
+        assert_eq!((busy.retry_after, busy.retries), (Some(30), 1));
+        assert_eq!(reply(429, Some(31)).failed(&TEST).retries, 0);
+        assert_eq!(
+            reply(429, None).failed(&TEST).message,
+            "Test asked us to slow down (429). Try again in a minute."
+        );
+        let down = reply(503, None).failed(&TEST);
+        assert_eq!((down.status, down.retries), (LiveStatus::Unavailable, 1));
+        assert_eq!(down.code.as_deref(), Some("503"));
+        assert_eq!(
+            reply(302, None).failed(&TEST).message,
+            "Test redirected the request (HTTP 302). This is not a verdict on the number."
+        );
+        assert_eq!(reply(400, None).failed(&TEST).retries, 0);
+    }
+
+    #[test]
+    fn transport_failures_name_the_host_and_retry_only_when_it_may_help() {
+        let f = |e| failure(&TEST, "ec.europa.eu", Some("proxy.example"), e);
+        let refused = f(ureq::Error::Io(
+            std::io::ErrorKind::ConnectionRefused.into(),
+        ));
+        assert_eq!(
+            refused.message,
+            "Couldn't reach ec.europa.eu: connection refused. This is not a verdict on the number."
+        );
+        assert_eq!(
+            (refused.status, refused.retries),
+            (LiveStatus::Unavailable, 1)
+        );
+        let slow = f(ureq::Error::Timeout(ureq::Timeout::Global));
+        assert_eq!(
+            (slow.message.as_str(), slow.retries),
+            ("Test took longer than 20 s.", 0)
+        );
+        assert_eq!(f(ureq::Error::HostNotFound).retries, 0);
+        assert!(
+            f(ureq::Error::ConnectProxyFailed("x".into()))
+                .message
+                .contains("proxy error at proxy.example")
+        );
+        assert_eq!(
+            f(ureq::Error::Tls("bad")).message,
+            "Couldn't verify ec.europa.eu's certificate: bad."
+        );
+        assert_eq!(
+            f(ureq::Error::BodyExceedsLimit(LIMIT)).message,
+            "Test sent more data than expected."
+        );
+    }
+}

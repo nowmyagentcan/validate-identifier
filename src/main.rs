@@ -8,6 +8,7 @@ use std::time::Instant;
 use clap::{Parser, Subcommand};
 use validate_identifier::check::{self, Options, usage};
 use validate_identifier::item::{Error, Kind};
+use validate_identifier::live;
 use validate_identifier::{phone, text};
 
 static VERSION: LazyLock<String> = LazyLock::new(validate_identifier::version);
@@ -128,19 +129,17 @@ fn run(command: Command) -> Result<(String, u8), Error> {
         json,
         debug,
     } = command;
+    live::set_debug(debug);
     let start = Instant::now();
     let values = match file {
         Some(path) => {
             let values = read_values(&path)?;
             let n = values.len();
-            log(
-                debug,
-                format!(
-                    "read {n} values from {} in {:.1?}",
-                    path.display(),
-                    start.elapsed()
-                ),
-            );
+            live::debug(format!(
+                "read {n} values from {} in {:.1?}",
+                path.display(),
+                start.elapsed()
+            ));
             values
         }
         None => values,
@@ -152,10 +151,7 @@ fn run(command: Command) -> Result<(String, u8), Error> {
     let start = Instant::now();
     let report = check::run(&values, &o)?;
     let n = report.results.len();
-    log(
-        debug,
-        format!("checked {n} values offline in {:.1?}", start.elapsed()),
-    );
+    live::debug(format!("checked {n} values in {:.1?}", start.elapsed()));
     let out = if json {
         serde_json::to_string(&report).expect("results are plain data") + "\n"
     } else {
@@ -170,13 +166,6 @@ fn people(text: String, stream: &impl IsTerminal) -> String {
         text
     } else {
         text::ascii(&text)
-    }
-}
-
-/// A `--debug` line on stderr; a closed stderr loses it quietly.
-fn log(debug: bool, line: String) {
-    if debug {
-        let _ = writeln!(anstream::stderr(), "debug: {line}");
     }
 }
 

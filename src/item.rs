@@ -200,7 +200,7 @@ pub struct Item {
     pub offline: Offline,
     pub details: Value,
     /// The registry's answer; null for offline checks.
-    pub live: Option<Value>,
+    pub live: Option<Live>,
     pub error: Option<Error>,
     pub warnings: Vec<Warning>,
 }
@@ -230,6 +230,60 @@ impl Item {
             warnings: found.warnings,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveStatus {
+    Active,
+    Inactive,
+    NotFound,
+    Unavailable,
+    RateLimited,
+    NotConfigured,
+}
+
+/// A registry's answer for one value (spec §2.4 `live`).
+#[derive(Clone, Debug, Serialize)]
+pub struct Live {
+    pub source: &'static str,
+    pub status: LiveStatus,
+    /// RFC 3339 UTC to the second: the source's own time when it sends one.
+    pub checked_at: String,
+    pub code: Option<String>,
+    pub retry_after: Option<u64>,
+    pub data: Value,
+    #[serde(skip)]
+    pub message: String,
+    /// What to set or do next, for people (the JSON leaves it out).
+    #[serde(skip)]
+    pub hint: Option<&'static str>,
+    /// How often the same request may be sent again: after 2 s, then 4 s.
+    #[serde(skip)]
+    pub retries: u32,
+}
+
+impl Live {
+    pub fn new(source: &'static str, status: LiveStatus, message: impl Into<String>) -> Self {
+        Live {
+            source,
+            status,
+            checked_at: utc(jiff::Timestamp::now()),
+            code: None,
+            retry_after: None,
+            data: Value::Null,
+            message: message.into(),
+            hint: None,
+            retries: 0,
+        }
+    }
+}
+
+/// A moment as RFC 3339 UTC to the second: `2026-10-29T10:12:03Z`.
+pub fn utc(t: jiff::Timestamp) -> String {
+    jiff::Timestamp::from_second(t.as_second())
+        .unwrap_or(t)
+        .to_string()
 }
 
 #[derive(Debug, Default, PartialEq, Serialize)]
