@@ -313,3 +313,101 @@ fn shows_the_sentence_types_and_examples_in_help() {
     let (_, out, _) = run(&["check", "--help"]);
     assert!(out.contains("[default: auto]"));
 }
+
+/// A list long enough that its answer overflows any pipe buffer.
+fn long_list() -> String {
+    let path = file(
+        "long.txt",
+        "DE44500105175407324931\nhello\n".repeat(3000).as_bytes(),
+    );
+    path.to_str().unwrap().to_string()
+}
+
+#[test]
+fn ends_quietly_when_stdout_closes() {
+    let list = long_list();
+    // Each command, and whether it answers on stdout (the others fail on stderr).
+    let commands: [(&[&str], bool); 5] = [
+        (&["check", "-f", &list], true),
+        (&["check", "DE44500105175407324931"], true),
+        (&["check", "-r", "XX", "1"], false),
+        (&["check", "-f", "no-such-file.txt"], false),
+        (&["check", "--frobnicate"], false),
+    ];
+    for (args, answers) in commands {
+        for extra in [&[][..], &["--json"], &["--debug"], &["--json", "--debug"]] {
+            let args = [args, extra].concat();
+            // Closed before the child starts: closing it after could lose the race to an
+            // answer that is already written.
+            let (reader, writer) = std::io::pipe().unwrap();
+            drop(reader);
+            let out = vi(&args)
+                .stdout(writer)
+                .stderr(Stdio::piped())
+                .output()
+                .unwrap();
+            let err = String::from_utf8(out.stderr).unwrap();
+            assert!(!err.contains("panicked"), "{args:?}: {err}");
+            if answers {
+                let err: String = err.lines().filter(|l| !l.starts_with("debug: ")).collect();
+                assert_eq!((out.status.code(), err.as_str()), (Some(0), ""), "{args:?}");
+            }
+        }
+    }
+    for args in [&["--help"][..], &["check", "--help"], &["--version"], &[]] {
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let out = vi(args)
+            .stdout(writer)
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+        assert!(
+            !String::from_utf8(out.stderr).unwrap().contains("panicked"),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn answers_even_when_stderr_closes() {
+    let list = long_list();
+    for args in [
+        &["check", "-f", &list, "--debug"][..],
+        &["check", "-f", &list, "--json", "--debug"],
+        &["check", "-r", "XX", "1", "--debug"],
+        &["check", "hello"],
+    ] {
+        let want = vi(args).output().unwrap();
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let out = vi(args).stderr(writer).output().unwrap();
+        assert_eq!(
+            (out.status.code(), out.stdout),
+            (want.status.code(), want.stdout),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn shows_timings_with_debug() {
+    let path = file("two.txt", b"DE44500105175407324931\nhello\n");
+    let path = path.to_str().unwrap();
+    let (code, out, err) = run(&["check", "-f", path, "--json", "--debug"]);
+    assert_eq!(code, 1);
+    assert!(serde_json::from_str::<Value>(&out).is_ok());
+    let lines: Vec<&str> = err.lines().collect();
+    assert_eq!(lines.len(), 2, "{err}");
+    assert!(
+        lines[0].starts_with(&format!("debug: read 2 values from {path} in ")),
+        "{err}"
+    );
+    assert!(
+        lines[1].starts_with("debug: checked 2 values offline in "),
+        "{err}"
+    );
+    let (_, plain, _) = run(&["check", "-f", path]);
+    let (_, debugged, _) = run(&["check", "-f", path, "--debug"]);
+    assert_eq!(plain, debugged);
+}

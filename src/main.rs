@@ -1,8 +1,9 @@
 use std::fs::File;
-use std::io::{self, ErrorKind, IsTerminal, Read};
+use std::io::{self, ErrorKind, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::LazyLock;
+use std::time::Instant;
 
 use clap::{Parser, Subcommand};
 use validate_identifier::check::{self, Options, usage};
@@ -71,6 +72,9 @@ enum Command {
         /// Print one JSON object
         #[arg(long)]
         json: bool,
+        /// Show timings on stderr
+        #[arg(long)]
+        debug: bool,
     },
 }
 
@@ -122,16 +126,36 @@ fn run(command: Command) -> Result<(String, u8), Error> {
         region,
         file,
         json,
+        debug,
     } = command;
+    let start = Instant::now();
     let values = match file {
-        Some(path) => read_values(&path)?,
+        Some(path) => {
+            let values = read_values(&path)?;
+            let n = values.len();
+            log(
+                debug,
+                format!(
+                    "read {n} values from {} in {:.1?}",
+                    path.display(),
+                    start.elapsed()
+                ),
+            );
+            values
+        }
         None => values,
     };
     let o = Options {
         kind: Kind::ALL.into_iter().find(|k| k.name() == kind),
         region: region.as_deref().map(phone::region).transpose()?,
     };
+    let start = Instant::now();
     let report = check::run(&values, &o)?;
+    let n = report.results.len();
+    log(
+        debug,
+        format!("checked {n} values offline in {:.1?}", start.elapsed()),
+    );
     let out = if json {
         serde_json::to_string(&report).expect("results are plain data") + "\n"
     } else {
@@ -149,6 +173,42 @@ fn people(text: String, stream: &impl IsTerminal) -> String {
     }
 }
 
+/// A `--debug` line on stderr; a closed stderr loses it quietly.
+fn log(debug: bool, line: String) {
+    if debug {
+        let _ = writeln!(anstream::stderr(), "debug: {line}");
+    }
+}
+
+/// Writes the answer to stdout; a closed stdout ends quietly.
+fn emit(out: &str, code: u8) -> ExitCode {
+    let mut stdout = anstream::stdout().lock();
+    match stdout
+        .write_all(out.as_bytes())
+        .and_then(|()| stdout.flush())
+    {
+        Ok(()) => ExitCode::from(code),
+        Err(e) if e.kind() == ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+        Err(e) => {
+            fail(&Error::new(
+                "io",
+                format!("Couldn't write output: {e}."),
+                None,
+            ));
+            ExitCode::from(3)
+        }
+    }
+}
+
+/// An error's lines on stderr; a closed stderr loses them quietly.
+fn fail(e: &Error) {
+    let _ = write!(
+        anstream::stderr(),
+        "{}",
+        people(text::error(e), &io::stderr())
+    );
+}
+
 fn main() -> ExitCode {
     let answer = if std::env::args_os().len() == 1 {
         let hint = "Try: validate-identifier check DE44500105175407324931";
@@ -157,12 +217,9 @@ fn main() -> ExitCode {
         run(Cli::parse().command)
     };
     match answer {
-        Ok((out, code)) => {
-            anstream::print!("{out}");
-            ExitCode::from(code)
-        }
+        Ok((out, code)) => emit(&out, code),
         Err(e) => {
-            anstream::eprint!("{}", people(text::error(&e), &io::stderr()));
+            fail(&e);
             ExitCode::from(if e.code == "io" { 3 } else { 2 })
         }
     }
