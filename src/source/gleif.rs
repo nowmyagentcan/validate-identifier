@@ -31,7 +31,6 @@ pub fn ask(c: &mut Client, items: &[&Item]) -> Result<Vec<Live>, Error> {
         Request::get(&url)
             .header("Accept", "application/vnd.api+json")
             .body(Vec::new())
-            .expect("a valid request")
     };
     let records = RefCell::new(None);
     let live = c.ask(&GLEIF, req, |r| {

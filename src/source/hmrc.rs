@@ -36,7 +36,6 @@ pub fn ask(c: &mut Client, items: &[&Item]) -> Result<Vec<Live>, Error> {
             .header("Accept", "application/vnd.hmrc.2.0+json")
             .header("Authorization", format!("Bearer {token}"))
             .body(Vec::new())
-            .expect("a valid request")
     };
     let with_requester = requester.is_some();
     Ok(vec![c.ask(&HMRC, req, |r| answer(r, with_requester))?])
@@ -72,7 +71,6 @@ fn token(c: &mut Client) -> Result<Result<String, Live>, Error> {
             .header("Content-Type", "application/x-www-form-urlencoded")
             .header("Accept", "application/json")
             .body(form.clone().into_bytes())
-            .expect("a valid request")
     };
     let got = RefCell::new(None);
     let live = c.ask(&HMRC, req, |r| {
@@ -168,7 +166,6 @@ pub fn eori(c: &mut Client, items: &[&Item]) -> Result<Vec<Live>, Error> {
             .header("Content-Type", "application/json")
             .header("Accept", "application/vnd.hmrc.1.0+json")
             .body(body.clone().into_bytes())
-            .expect("a valid request")
     };
     let answers = RefCell::new(None);
     let live = c.ask(&HMRC, req, |r| {

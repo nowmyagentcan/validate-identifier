@@ -2149,7 +2149,6 @@ fn gleif_records_without_their_statuses_are_unavailable() {
 }
 
 #[test]
-#[ignore = "known bug: F04"]
 fn a_token_that_cannot_be_sent_is_unavailable() {
     let mock = Mock::start(|r| match r.target.as_str() {
         "/oauth/token" => reply(200, json!({"access_token": "bad\r\ntoken"}).to_string()),

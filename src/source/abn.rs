@@ -39,11 +39,7 @@ pub fn ask(c: &mut Client, items: &[&Item]) -> Result<Vec<Live>, Error> {
         &ABN,
         &format!("/json/AbnDetails.aspx?abn={abn}&guid={guid}"),
     );
-    let req = || {
-        Request::get(&url)
-            .body(Vec::new())
-            .expect("a valid request")
-    };
+    let req = || Request::get(&url).body(Vec::new());
     Ok(vec![c.ask(&ABN, req, |r| Ok(answer(r)))?])
 }
 

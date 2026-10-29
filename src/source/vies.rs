@@ -43,7 +43,6 @@ pub fn ask(c: &mut Client, items: &[&Item]) -> Result<Vec<Live>, Error> {
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
             .body(body.clone().into_bytes())
-            .expect("a valid request")
     };
     Ok(vec![c.ask(&VIES, req, |r| answer(r, prefix))?])
 }

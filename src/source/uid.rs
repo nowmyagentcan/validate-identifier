@@ -33,7 +33,6 @@ pub fn ask(c: &mut Client, items: &[&Item]) -> Result<Vec<Live>, Error> {
             .header("Content-Type", "text/xml; charset=utf-8")
             .header("SOAPAction", ACTION)
             .body(body.clone().into_bytes())
-            .expect("a valid request")
     };
     let vat = item.kind == Some(Kind::Vat);
     Ok(vec![c.ask(&UID, req, |r| Ok(answer(r, vat)))?])

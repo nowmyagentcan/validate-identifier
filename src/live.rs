@@ -221,16 +221,24 @@ impl Client {
 
 impl Client {
     /// Sends a request built by `req` and reads the answer with `read`; a transient failure
-    /// is tried again (after 2 s, then 4 s, or the 429's `Retry-After`), never a timeout.
+    /// is tried again (after 2 s, then 4 s, or the 429's `Retry-After`), never a timeout. A
+    /// request that can't be built, as when a registry's token holds a line break, isn't sent.
     pub fn ask(
         &mut self,
         s: &Source,
-        req: impl Fn() -> Request<Vec<u8>>,
+        req: impl Fn() -> ureq::http::Result<Request<Vec<u8>>>,
         read: impl Fn(&Reply) -> Result<Live, Error>,
     ) -> Result<Live, Error> {
         let mut tries = 0;
         loop {
-            let live = match self.send(s, req()) {
+            let Ok(req) = req() else {
+                let message = format!(
+                    "Couldn't build the request to {}. This is not a verdict on the number.",
+                    s.name
+                );
+                return Ok(unavailable(s, message));
+            };
+            let live = match self.send(s, req) {
                 Ok(reply) => read(&reply)?,
                 Err(failed) => failed,
             };
