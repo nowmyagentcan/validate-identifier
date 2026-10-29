@@ -190,7 +190,8 @@ impl Client {
             req.uri()
         ));
         let answer = self.agent.run(req).and_then(|mut r| {
-            let body = r.body_mut().with_config().limit(LIMIT).read_to_string()?;
+            let body = r.body_mut().with_config().limit(LIMIT).read_to_vec()?;
+            let body = String::from_utf8_lossy(&body).into_owned();
             Ok((r, body))
         });
         let ms = at.elapsed().as_millis();

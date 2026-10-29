@@ -2187,7 +2187,6 @@ fn never_prints_a_secret_that_a_registry_sends_back() {
 }
 
 #[test]
-#[ignore = "known bug: F18"]
 fn does_not_ask_again_after_an_answer_it_cannot_decode() {
     let mock = Mock::start(|_| Answer::Bytes(vec![0xff, 0xfe]));
     let (code, v) = mock.json(&["check", "DE136695976", "--live"], &[]);
