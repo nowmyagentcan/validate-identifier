@@ -3,7 +3,9 @@
 
 mod common;
 
-use common::{Answer, Dns, DnsStub, GUID, HMRC_CREDS, Mock, TOKEN, closed_port, name, reply, vi};
+use common::{
+    Answer, Dns, DnsStub, GUID, HMRC_CREDS, Mock, TOKEN, closed_port, hang_up_port, name, reply, vi,
+};
 use hickory_resolver::proto::rr::rdata::{A, MX, NAPTR};
 use hickory_resolver::proto::rr::{RData, RecordType};
 use serde_json::{Value, json};
@@ -2210,22 +2212,60 @@ fn names_the_proxy_it_could_not_reach() {
 
 #[test]
 fn reads_gzipped_answers() {
-    let mock = Mock::start(|_| Answer::Gzip(vies_ok("EXAMPLE GMBH")));
+    let mock = Mock::start(|_| Answer::Gzip("gzip", vies_ok("EXAMPLE GMBH")));
     let (code, v) = mock.json(&["check", "DE136695976", "--live"], &[]);
     assert_eq!((code, first(&v)["status"].as_str()), (0, Some("valid")));
     assert_eq!(first(&v)["live"]["data"]["name"], "EXAMPLE GMBH");
 }
 
 #[test]
+#[ignore = "known bug: R3-F03"]
+fn reads_gzipped_answers_whatever_the_case_of_their_coding() {
+    for coding in ["GZIP", "Gzip"] {
+        let mock = Mock::start(move |_| Answer::Gzip(coding, vies_ok("EXAMPLE GMBH")));
+        let (code, v) = mock.json(&["check", "DE136695976", "--live"], &[]);
+        let status = first(&v)["status"].as_str();
+        assert_eq!((code, status), (0, Some("valid")), "{coding}");
+    }
+}
+
+#[test]
 fn holds_the_answer_cap_after_gzip() {
     let mut big: Value = serde_json::from_str(&vies_ok("EXAMPLE GMBH")).unwrap();
     big["padding"] = "x".repeat(2 << 20).into();
-    let mock = Mock::start(move |_| Answer::Gzip(big.to_string()));
+    let mock = Mock::start(move |_| Answer::Gzip("gzip", big.to_string()));
     let (code, v) = mock.json(&["check", "DE136695976", "--live"], &[]);
     assert_eq!(
         (code, first(&v)["message"].as_str()),
         (3, Some("VIES sent more data than expected."))
     );
+}
+
+/// A VIES answer of `n` bytes, plain or gzipped; its status in the result.
+fn vies_of_size(n: usize, gzip: bool) -> Value {
+    let ok = vies_ok("EXAMPLE GMBH");
+    let body = ok.clone() + &" ".repeat(n - ok.len());
+    let mock = Mock::start(move |_| match gzip {
+        true => Answer::Gzip("gzip", body.clone()),
+        false => Answer::Bytes(body.clone().into_bytes()),
+    });
+    let (_, v) = mock.json(&["check", "DE136695976", "--live"], &[]);
+    first(&v)["status"].clone()
+}
+
+#[test]
+fn takes_answers_up_to_one_mib_after_decoding() {
+    let mib = 1 << 20;
+    assert_eq!(vies_of_size(mib - 1, false), "valid");
+    assert_eq!(vies_of_size(mib + 1, false), "unavailable");
+    assert_eq!(vies_of_size(mib, true), "valid");
+    assert_eq!(vies_of_size(mib + 1, true), "unavailable");
+}
+
+#[test]
+#[ignore = "known bug: R3-F04"]
+fn takes_a_plain_answer_of_exactly_one_mib() {
+    assert_eq!(vies_of_size(1 << 20, false), "valid");
 }
 
 #[test]
@@ -2257,6 +2297,41 @@ fn never_prints_a_secret_from_a_batch_answer_or_in_its_sent_form() {
 }
 
 #[test]
+#[ignore = "known bug: R3-F01"]
+fn never_prints_a_secret_sent_back_in_lowercase_percent_encoding() {
+    let echo = Mock::start(|_| reply(401, json!({"error": "s3cret%2fxyz"}).to_string()));
+    // `run` fails the test when a secret reaches stdout or stderr.
+    echo.run(&["check", "GB434031439", "--live", "--json"], &HMRC_CREDS);
+}
+
+#[test]
+#[ignore = "known bug: R3-F01"]
+fn debug_lines_leave_out_the_password_in_a_base_url() {
+    let url = hang_up_port().replace("http://", "https://user:pa55word@");
+    let (code, _, err) = vi(
+        &["check", "DE136695976", "--live", "--debug"],
+        &[("VALIDATE_IDENTIFIER_VIES_URL", &url)],
+    );
+    assert_eq!(code, 3);
+    assert!(err.contains("debug: VIES POST https://"), "{err}");
+    assert!(!err.contains("pa55word"), "{err}");
+}
+
+#[test]
+fn never_prints_the_password_of_a_proxy() {
+    let proxy = hang_up_port().replace("http://", "http://user:pa55word@");
+    let (code, out, err) = vi(
+        &["check", "DE136695976", "--live", "--debug"],
+        &[("HTTPS_PROXY", &proxy)],
+    );
+    assert_eq!(code, 3);
+    // Also as sent, in a Basic Proxy-Authorization header.
+    for secret in ["pa55word", "dXNlcjpwYTU1d29yZA"] {
+        assert!(!out.contains(secret) && !err.contains(secret), "{out}{err}");
+    }
+}
+
+#[test]
 fn gleif_records_without_an_lei_are_unavailable() {
     let id = lei(1);
     let mock = Mock::start(|_| reply(200, r#"{"data":[{}]}"#));
@@ -2266,6 +2341,19 @@ fn gleif_records_without_an_lei_are_unavailable() {
         (3, Some("unavailable")),
         "{v}"
     );
+}
+
+#[test]
+#[ignore = "known bug: R3-F02"]
+fn gleif_records_with_an_empty_lei_are_unavailable() {
+    let id = lei(1);
+    for empty in ["", " "] {
+        let body = json!({"data": [{"attributes": {"lei": empty}}]}).to_string();
+        let mock = Mock::start(move |_| reply(200, body.clone()));
+        let (code, v) = mock.json(&["check", &id, "--live"], &[]);
+        let status = first(&v)["status"].as_str();
+        assert_eq!((code, status), (3, Some("unavailable")), "{v}");
+    }
 }
 
 #[test]

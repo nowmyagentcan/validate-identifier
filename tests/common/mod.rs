@@ -63,8 +63,8 @@ pub enum Answer {
     Reply(u16, Vec<(&'static str, String)>, String),
     /// A 200 whose body is these bytes, UTF-8 or not.
     Bytes(Vec<u8>),
-    /// A 200 whose body is this text, gzipped.
-    Gzip(String),
+    /// A 200 whose body is this text, gzipped, sent with this `Content-Encoding`.
+    Gzip(&'static str, String),
     /// Keeps the connection open without answering.
     Hang,
     /// Closes the connection without answering.
@@ -112,6 +112,7 @@ impl Mock {
             HMRC_CREDS[0].1,
             HMRC_CREDS[1].1,
             "s3cret%2Fxyz",
+            "s3cret%2fxyz",
             GUID.1,
             TOKEN,
         ] {
@@ -185,12 +186,12 @@ fn serve(
             );
             let _ = stream.write_all(&[head.as_bytes(), &body].concat());
         }
-        Answer::Gzip(text) => {
+        Answer::Gzip(coding, text) => {
             let mut gz = GzEncoder::new(Vec::new(), Compression::default());
             gz.write_all(text.as_bytes())?;
             let body = gz.finish()?;
             let head = format!(
-                "HTTP/1.1 200 X\r\nContent-Length: {}\r\nContent-Encoding: gzip\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 200 X\r\nContent-Length: {}\r\nContent-Encoding: {coding}\r\nConnection: close\r\n\r\n",
                 body.len()
             );
             let _ = stream.write_all(&[head.as_bytes(), &body].concat());
@@ -239,6 +240,14 @@ pub fn vi(args: &[&str], env: &[(&str, &str)]) -> (i32, String, String) {
 pub fn closed_port() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     format!("http://{}", listener.local_addr().unwrap())
+}
+
+/// A loopback URL that closes every connection as soon as it opens.
+pub fn hang_up_port() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    thread::spawn(move || listener.incoming().for_each(drop));
+    url
 }
 
 /// What the DNS stub answers to one query.
