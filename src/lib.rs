@@ -8,6 +8,7 @@ pub mod live;
 pub mod peppol;
 pub mod phone;
 pub mod source {
+    pub mod hmrc;
     pub mod vies;
 }
 pub mod text;

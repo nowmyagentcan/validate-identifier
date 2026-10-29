@@ -544,3 +544,247 @@ fn stops_when_vies_rejects_the_requester() {
         "✗ --requester DE136695977 isn't a valid VAT number.\n  Pass your own VAT number with its country prefix, e.g. DE136695976.\n"
     );
 }
+
+const HMRC_CREDS: [(&str, &str); 2] = [
+    ("HMRC_CLIENT_ID", "id-abc123"),
+    ("HMRC_CLIENT_SECRET", "s3cret/xyz"),
+];
+
+/// A mock HMRC that hands out a token, then answers lookups with `lookup(path)`.
+fn hmrc(lookup: impl Fn(&str) -> Answer + Send + 'static) -> Mock {
+    Mock::start(move |r| {
+        match r.target.as_str() {
+        "/oauth/token" => reply(
+            200,
+            json!({"access_token": "tok-9f8e7d", "token_type": "bearer", "expires_in": 14400, "scope": "read:vat"})
+                .to_string(),
+        ),
+        path => lookup(path),
+    }
+    })
+}
+
+fn hmrc_ok() -> Answer {
+    reply(
+        200,
+        json!({
+            "target": {"name": "EXAMPLE TRADING LTD", "vatNumber": "434031439",
+                       "address": {"line1": "1 Test Road", "line2": "Testville", "postcode": "TE1 1ST", "countryCode": "GB"}},
+            "processingDate": "2026-10-29T11:12:03+01:00",
+            "consultationNumber": "abcDEF123",
+        })
+        .to_string(),
+    )
+}
+
+#[test]
+fn says_uk_vat_needs_hmrc_credentials() {
+    let mock = Mock::start(|_| reply(500, ""));
+    let (code, out, _) = mock.run(&["check", "GB434031439", "GB434031439001", "--live"], &[]);
+    assert_eq!(code, 3);
+    assert!(mock.requests().is_empty());
+    assert_eq!(
+        out.lines().take(2).collect::<Vec<_>>(),
+        [
+            "! GB434031439     VAT · GB  not configured · UK VAT checks need your own HMRC credentials.",
+            "                            Set HMRC_CLIENT_ID and HMRC_CLIENT_SECRET (see the README)."
+        ]
+    );
+    let (_, v) = mock.json(&["check", "GB434031439", "--live"], &[]);
+    let r = first(&v);
+    assert_eq!(
+        (r["status"].as_str(), r["checked"].as_str()),
+        (Some("not_configured"), Some("offline"))
+    );
+    assert_eq!(
+        (r["live"]["source"].as_str(), r["live"]["status"].as_str()),
+        (Some("HMRC"), Some("not_configured"))
+    );
+}
+
+#[test]
+fn asks_hmrc_with_a_token_fetched_once() {
+    let mock = hmrc(|_| hmrc_ok());
+    let (code, v) = mock.json(
+        &["check", "GB434031439", "GB 434 0314 39001", "--live"],
+        &HMRC_CREDS,
+    );
+    assert_eq!(code, 0);
+    let got = mock.requests();
+    assert_eq!(got.len(), 3);
+    assert_eq!(
+        (got[0].method.as_str(), got[0].target.as_str()),
+        ("POST", "/oauth/token")
+    );
+    assert_eq!(
+        got[0].header("content-type"),
+        Some("application/x-www-form-urlencoded")
+    );
+    assert_eq!(
+        got[0].body,
+        "client_id=id-abc123&client_secret=s3cret%2Fxyz&grant_type=client_credentials&scope=read%3Avat"
+    );
+    for lookup in &got[1..] {
+        assert_eq!(lookup.method, "GET");
+        assert_eq!(
+            lookup.target,
+            "/organisations/vat/check-vat-number/lookup/434031439"
+        );
+        assert_eq!(
+            lookup.header("accept"),
+            Some("application/vnd.hmrc.2.0+json")
+        );
+        assert_eq!(lookup.header("authorization"), Some("Bearer tok-9f8e7d"));
+        assert_eq!(lookup.header("user-agent"), Some(UA));
+    }
+    assert!(got[2].at - got[1].at >= std::time::Duration::from_millis(390));
+    let r = first(&v);
+    assert_eq!(r["status"], "valid");
+    assert_eq!(
+        r["message"],
+        "Registered for VAT (HMRC, 2026-10-29 10:12 UTC)."
+    );
+    assert_eq!(
+        r["live"],
+        json!({"source": "HMRC", "status": "active", "checked_at": "2026-10-29T10:12:03Z", "code": null,
+               "retry_after": null, "data": {"name": "EXAMPLE TRADING LTD",
+               "address": "1 Test Road, Testville, TE1 1ST", "consultation_number": "abcDEF123"}})
+    );
+    // The branch suffix stays in the details only.
+    assert_eq!(v["results"][1]["details"]["branch"], "001");
+}
+
+#[test]
+fn sends_a_uk_requester_to_hmrc_only() {
+    let mock = hmrc(|_| hmrc_ok());
+    let (code, v) = mock.json(
+        &[
+            "check",
+            "GB434031439",
+            "--live",
+            "--requester",
+            "GB434031439",
+        ],
+        &HMRC_CREDS,
+    );
+    assert_eq!(code, 0);
+    assert_eq!(
+        mock.requests()[1].target,
+        "/organisations/vat/check-vat-number/lookup/434031439/434031439"
+    );
+    assert_eq!(first(&v)["warnings"], json!([]));
+    let (_, v) = mock.json(
+        &[
+            "check",
+            "GB434031439",
+            "--live",
+            "--requester",
+            "DE136695976",
+        ],
+        &HMRC_CREDS,
+    );
+    assert_eq!(
+        mock.requests()[3].target,
+        "/organisations/vat/check-vat-number/lookup/434031439"
+    );
+    assert_eq!(
+        first(&v)["warnings"],
+        json!([{"code": "requester_not_used", "message": "--requester is a DE number, so it wasn't sent to HMRC."}])
+    );
+    let mock = hmrc(|_| {
+        reply(403, json!({"code": "INVALID_REQUEST", "message": "requesterVrn does not match a registered company"}).to_string())
+    });
+    let (code, out, err) = mock.run(
+        &[
+            "check",
+            "GB434031439",
+            "--live",
+            "--requester",
+            "GB434031439",
+        ],
+        &HMRC_CREDS,
+    );
+    assert_eq!((code, out.as_str()), (2, ""));
+    assert_eq!(
+        err,
+        "✗ HMRC rejected your --requester number.\n  Pass your own valid VAT number, or leave out --requester.\n"
+    );
+}
+
+#[test]
+fn maps_every_hmrc_answer() {
+    let error = |status: u16, code: &str| {
+        let body = json!({"code": code, "message": "x"}).to_string();
+        move |_: &str| reply(status, body.clone())
+    };
+    let not_found = hmrc(error(404, "NOT_FOUND"));
+    let (code, v) = not_found.json(&["check", "GB434031439", "--live"], &HMRC_CREDS);
+    assert_eq!((code, first(&v)["status"].as_str()), (1, Some("not_found")));
+    assert_eq!(
+        first(&v)["message"],
+        "HMRC has no VAT registration for this number."
+    );
+    assert_eq!(first(&v)["live"]["code"], "NOT_FOUND");
+
+    let bad = hmrc(error(400, "INVALID_REQUEST"));
+    let (code, v) = bad.json(&["check", "GB434031439", "--live"], &HMRC_CREDS);
+    assert_eq!(
+        (code, first(&v)["status"].as_str()),
+        (3, Some("unavailable"))
+    );
+    assert_eq!(
+        first(&v)["message"],
+        "HMRC didn't accept the request (INVALID_REQUEST). This is not a verdict on the number."
+    );
+
+    let busy = hmrc(|_| {
+        Answer::Reply(
+            429,
+            vec![("Retry-After", "45".into())],
+            r#"{"code":"MESSAGE_THROTTLED_OUT"}"#.into(),
+        )
+    });
+    let (code, v) = busy.json(&["check", "GB434031439", "--live"], &HMRC_CREDS);
+    assert_eq!(
+        (code, first(&v)["status"].as_str()),
+        (3, Some("rate_limited"))
+    );
+    assert_eq!(first(&v)["live"]["retry_after"], 45);
+
+    let down = hmrc(error(503, "SERVER_ERROR"));
+    let (code, v) = down.json(&["check", "GB434031439", "--live"], &HMRC_CREDS);
+    assert_eq!(
+        (code, first(&v)["status"].as_str()),
+        (3, Some("unavailable"))
+    );
+    assert_eq!(down.requests().len(), 3, "token, lookup, one retry");
+
+    // Rejected credentials: said once, and nothing more is asked.
+    let rejected = Mock::start(|_| reply(401, r#"{"error":"invalid_client"}"#));
+    let (code, out, _) = rejected.run(
+        &["check", "GB434031439", "GB980780684", "--live"],
+        &HMRC_CREDS,
+    );
+    assert_eq!((code, rejected.requests().len()), (3, 1));
+    assert!(out.starts_with(
+        "! GB434031439  VAT · GB  not configured · HMRC rejected the client ID or secret.\n                         Check HMRC_CLIENT_ID, HMRC_CLIENT_SECRET and VALIDATE_IDENTIFIER_HMRC_URL (sandbox credentials need the test URL).\n"
+    ), "{out}");
+}
+
+#[test]
+fn never_prints_hmrc_secrets_or_tokens() {
+    let mock = hmrc(|_| hmrc_ok());
+    for args in [&["--json"][..], &[], &["--debug"]] {
+        let (code, out, err) = mock.run(
+            &[&["check", "GB434031439", "--live"][..], args].concat(),
+            &HMRC_CREDS,
+        );
+        assert_eq!(code, 0);
+        for secret in ["s3cret", "tok-9f8e7d", "id-abc123"] {
+            assert!(
+                !out.contains(secret) && !err.contains(secret),
+                "{secret} in {out}{err}"
+            );
+        }
+    }
+}

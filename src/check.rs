@@ -12,6 +12,7 @@ use crate::item::{
     DATA, Data, Error, Found, Item, Kind, Live, LiveStatus, Summary, Warning, a, clean,
 };
 use crate::live::{Client, Source, unavailable};
+use crate::source::hmrc::{self, HMRC};
 use crate::source::vies::{self, VIES};
 
 pub const MAX_VALUES: usize = 10_000;
@@ -106,11 +107,18 @@ struct Route {
     ask: fn(&mut Client, &[&Item]) -> Result<Vec<Live>, Error>,
 }
 
-const ROUTES: [Route; 1] = [Route {
-    source: &VIES,
-    batch: 1,
-    ask: vies::ask,
-}];
+const ROUTES: [Route; 2] = [
+    Route {
+        source: &VIES,
+        batch: 1,
+        ask: vies::ask,
+    },
+    Route {
+        source: &HMRC,
+        batch: 1,
+        ask: hmrc::ask,
+    },
+];
 
 /// The registry for an item whose format passed (its check digits may have failed).
 fn route(i: &Item) -> Option<&'static Route> {
@@ -118,8 +126,13 @@ fn route(i: &Item) -> Option<&'static Route> {
         .error
         .as_ref()
         .is_none_or(|e| e.code.ends_with("_check_digits"));
-    match (i.kind?, i.details["prefix"].as_str()) {
-        (Kind::Vat, Some(p)) if ok && p != "GB" && p != "CHE" => Some(&ROUTES[0]),
+    let digits = i.details["number"]
+        .as_str()
+        .is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()));
+    match (ok, i.kind?, i.details["prefix"].as_str()) {
+        // GB numbers of the GD and HA form have no registry to ask.
+        (true, Kind::Vat, Some("GB")) if digits => Some(&ROUTES[1]),
+        (true, Kind::Vat, Some(p)) if p != "GB" && p != "CHE" => Some(&ROUTES[0]),
         _ => None,
     }
 }
@@ -220,6 +233,7 @@ fn live(
     for (i, live) in answers {
         let unused = match (&client.requester, live.source) {
             (Some((p, _)), "VIES") if !vies::uses(p) => Some((a(p), "VIES")),
+            (Some((p, _)), "HMRC") if p != "GB" => Some((a(p), "HMRC")),
             _ => None,
         };
         items[i].answer(live);

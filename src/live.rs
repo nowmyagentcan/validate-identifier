@@ -69,6 +69,8 @@ pub struct Reply {
 pub struct Client {
     /// `--requester` as prefix and number, for the sources that return consultation numbers.
     pub requester: Option<(String, String)>,
+    /// HMRC's bearer token, once fetched.
+    pub token: Option<String>,
     agent: Agent,
     bases: HashMap<&'static str, String>,
     last: HashMap<&'static str, Instant>,
@@ -98,6 +100,7 @@ impl Client {
             .into();
         Ok(Client {
             requester: None,
+            token: None,
             agent,
             bases,
             last: HashMap::new(),

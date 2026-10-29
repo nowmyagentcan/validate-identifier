@@ -17,12 +17,14 @@ const EXAMPLES: &str =
     "Types: iban, vat (EU, XI, GB, CH), phone, email, lei, abn, uid (Swiss), eori, peppol.
 Nothing leaves this computer unless you pass --live.
 
-[1;4mEnvironment (live checks):[0m
-  VALIDATE_IDENTIFIER_VIES_URL         base URL (tests, mirrors)
+\x1b[1;4mEnvironment (live checks):\x1b[0m
+  HMRC_CLIENT_ID, HMRC_CLIENT_SECRET   UK VAT checks with your own HMRC application
+  VALIDATE_IDENTIFIER_HMRC_URL         HMRC base URL (sandbox: https://test-api.service.hmrc.gov.uk)
+  VALIDATE_IDENTIFIER_VIES_URL         other base URL (tests, mirrors)
   HTTPS_PROXY, NO_PROXY                proxy for HTTPS requests
   NO_COLOR                             no colour
 
-[1;4mExamples:[0m
+\x1b[1;4mExamples:\x1b[0m
   validate-identifier check DE44500105175407324931
   validate-identifier check \"+44 20 7946 0958\" \"07911 123456\" -r GB
   validate-identifier check DE136695976 --live
