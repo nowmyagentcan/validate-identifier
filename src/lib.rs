@@ -1,3 +1,5 @@
+pub mod item;
+
 pub const PHONE_METADATA: &str = "9.0.42";
 pub const IBAN_REGISTRY: &str = "103";
 pub const PEPPOL_CODE_LIST: &str = "9.7";
