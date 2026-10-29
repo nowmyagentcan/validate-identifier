@@ -2217,7 +2217,6 @@ fn reads_gzipped_answers() {
 }
 
 #[test]
-#[ignore = "known bug: R2-F07"]
 fn holds_the_answer_cap_after_gzip() {
     let mut big: Value = serde_json::from_str(&vies_ok("EXAMPLE GMBH")).unwrap();
     big["padding"] = "x".repeat(2 << 20).into();

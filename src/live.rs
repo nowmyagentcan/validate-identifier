@@ -3,7 +3,7 @@
 //! `--debug` lines go to stderr with every secret replaced by REDACTED.
 
 use std::collections::{BTreeMap, HashMap};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -212,7 +212,13 @@ impl Client {
             req.uri()
         ));
         let answer = self.agent.run(req).and_then(|mut r| {
-            let body = r.body_mut().with_config().limit(LIMIT).read_to_vec()?;
+            // ureq's limit counts bytes on the wire; the cap holds after gzip too.
+            let mut body = Vec::new();
+            let wire = r.body_mut().with_config().limit(LIMIT).reader();
+            wire.take(LIMIT + 1).read_to_end(&mut body)?;
+            if body.len() as u64 > LIMIT {
+                return Err(ureq::Error::BodyExceedsLimit(LIMIT));
+            }
             let body = String::from_utf8_lossy(&body).into_owned();
             Ok((r, body))
         });
