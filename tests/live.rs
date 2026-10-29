@@ -291,7 +291,8 @@ fn turns_away_plain_http_overrides_to_other_hosts() {
     );
 }
 
-/// The request start times `--debug` printed for `source`, in seconds since the first.
+/// The request start times `--debug` printed for `source` (to the ms, so gaps may round
+/// down by 1 ms).
 fn starts(err: &str, source: &str) -> Vec<f64> {
     err.lines()
         .filter(|l| l.starts_with(&format!("debug: {source} ")) && l.ends_with(" s)"))
@@ -319,7 +320,7 @@ fn paces_requests_to_each_source() {
     assert_eq!(code, 0);
     let at = starts(&err, "VIES");
     assert_eq!(at.len(), 3, "{err}");
-    assert!(at.windows(2).all(|w| w[1] - w[0] >= 1.0), "{at:?}");
+    assert!(at.windows(2).all(|w| w[1] - w[0] >= 0.999), "{at:?}");
     let got = mock.requests();
     assert!(
         got.windows(2)
@@ -748,6 +749,17 @@ fn maps_every_hmrc_answer() {
     );
     assert_eq!(first(&v)["live"]["retry_after"], 45);
 
+    let expired = hmrc(error(401, "INVALID_CREDENTIALS"));
+    let (code, v) = expired.json(&["check", "GB434031439", "--live"], &HMRC_CREDS);
+    assert_eq!(
+        (code, first(&v)["status"].as_str()),
+        (3, Some("not_configured"))
+    );
+    assert_eq!(
+        first(&v)["message"],
+        "HMRC rejected the client ID or secret."
+    );
+
     let down = hmrc(error(503, "SERVER_ERROR"));
     let (code, v) = down.json(&["check", "GB434031439", "--live"], &HMRC_CREDS);
     assert_eq!(
@@ -933,9 +945,14 @@ fn abn_answer(abn: &str, status: &str, message: &str) -> Answer {
 #[test]
 fn asks_abn_lookup_with_the_guid_and_never_shows_it() {
     let mock = Mock::start(|_| abn_answer("51824753556", "Active", ""));
-    let (code, v) = mock.json(&["check", "51 824 753 556", "--live"], &[GUID]);
+    let (code, v) = mock.json(
+        &["check", "51 824 753 556", "53004085616", "--live"],
+        &[GUID],
+    );
     assert_eq!(code, 0);
-    let req = &mock.requests()[0];
+    let got = mock.requests();
+    assert!(got[1].at - got[0].at >= std::time::Duration::from_millis(490));
+    let req = &got[0];
     assert_eq!(req.method, "GET");
     assert_eq!(
         req.target,

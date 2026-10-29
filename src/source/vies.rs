@@ -119,6 +119,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn busy_codes_are_rate_limited_and_tried_twice_more() {
+        for code in BUSY {
+            let r = Reply {
+                status: 200,
+                body: json!({"actionSucceed": false, "errorWrappers": [{"error": code}]})
+                    .to_string(),
+                retry_after: None,
+            };
+            let live = answer(&r, "DE").unwrap();
+            assert_eq!(live.status, LiveStatus::RateLimited, "{code}");
+            assert_eq!((live.retry_after, live.retries), (Some(60), 2), "{code}");
+            assert_eq!(
+                live.message,
+                format!("VIES is busy ({code}). Try again in a minute.")
+            );
+        }
+    }
+
+    #[test]
     fn unknown_error_codes_are_never_a_verdict() {
         let r = Reply {
             status: 200,
