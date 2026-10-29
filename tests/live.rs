@@ -291,3 +291,177 @@ fn turns_away_plain_http_overrides_to_other_hosts() {
         "✗ VALIDATE_IDENTIFIER_VIES_URL must start with https:// (http:// only for 127.0.0.1, [::1] or localhost).\n  Fix it, or unset it to use the official address.\n"
     );
 }
+
+/// The request start times `--debug` printed for `source`, in seconds since the first.
+fn starts(err: &str, source: &str) -> Vec<f64> {
+    err.lines()
+        .filter(|l| l.starts_with(&format!("debug: {source} ")) && l.ends_with(" s)"))
+        .map(|l| {
+            let at = l.rsplit("(+").next().unwrap();
+            at.trim_end_matches(" s)").parse().unwrap()
+        })
+        .collect()
+}
+
+#[test]
+fn paces_requests_to_each_source() {
+    let mock = Mock::start(|_| reply(200, vies_ok("EXAMPLE GMBH")));
+    let (code, _, err) = mock.run(
+        &[
+            "check",
+            "DE136695976",
+            "IE6388047V",
+            "FR0H384498879",
+            "--live",
+            "--debug",
+        ],
+        &[],
+    );
+    assert_eq!(code, 0);
+    let at = starts(&err, "VIES");
+    assert_eq!(at.len(), 3, "{err}");
+    assert!(at.windows(2).all(|w| w[1] - w[0] >= 1.0), "{at:?}");
+    let got = mock.requests();
+    assert!(
+        got.windows(2)
+            .all(|w| w[1].at - w[0].at >= std::time::Duration::from_millis(990))
+    );
+}
+
+/// A mock that gives `first` answers in turn, then `then` forever.
+fn in_turn(first: Vec<Answer>, then: impl Fn() -> Answer + Send + 'static) -> Mock {
+    let first = std::sync::Mutex::new(first.into_iter());
+    Mock::start(move |_| first.lock().unwrap().next().unwrap_or_else(&then))
+}
+
+#[test]
+fn retries_once_after_a_server_error_or_a_dropped_connection() {
+    for failure in [reply(503, ""), Answer::Close] {
+        let mock = in_turn(vec![failure], || reply(200, vies_ok("EXAMPLE GMBH")));
+        let (code, v) = mock.json(&["check", "DE136695976", "--live"], &[]);
+        assert_eq!((code, first(&v)["status"].as_str()), (0, Some("valid")));
+        let got = mock.requests();
+        assert_eq!(got.len(), 2);
+        assert!(got[1].at - got[0].at >= std::time::Duration::from_secs(2));
+    }
+    // A second failure is the answer.
+    let mock = Mock::start(|_| reply(502, ""));
+    let (code, v) = mock.json(&["check", "DE136695976", "--live"], &[]);
+    assert_eq!((code, mock.requests().len()), (3, 2));
+    assert_eq!(
+        first(&v)["message"],
+        "VIES answered (HTTP 502). This is not a verdict on the number."
+    );
+    assert_eq!(first(&v)["live"]["code"], "502");
+}
+
+#[test]
+fn never_retries_a_timeout() {
+    let mock = Mock::start(|_| Answer::Hang);
+    let (code, v) = mock.json(&["check", "DE136695976", "--live"], &[]);
+    assert_eq!((code, mock.requests().len()), (3, 1));
+    assert_eq!(first(&v)["message"], "VIES took longer than 20 s.");
+}
+
+#[test]
+fn honours_short_retry_after_and_reports_long_ones() {
+    let busy = |secs: &str| Answer::Reply(429, vec![("Retry-After", secs.into())], String::new());
+    let mock = in_turn(vec![busy("1")], || reply(200, vies_ok("EXAMPLE GMBH")));
+    let (code, _) = mock.json(&["check", "DE136695976", "--live"], &[]);
+    assert_eq!((code, mock.requests().len()), (0, 2));
+    let mock = Mock::start(move |_| busy("60"));
+    let (code, v) = mock.json(&["check", "DE136695976", "--live"], &[]);
+    let r = first(&v);
+    assert_eq!((code, mock.requests().len()), (3, 1));
+    assert_eq!(r["status"], "rate_limited");
+    assert_eq!(
+        r["message"],
+        "VIES asked us to slow down (429). Try again in 60 s."
+    );
+    assert_eq!(
+        (
+            r["live"]["code"].as_str(),
+            r["live"]["retry_after"].as_u64()
+        ),
+        (Some("429"), Some(60))
+    );
+}
+
+#[test]
+fn waits_twice_when_vies_is_busy() {
+    let mock = Mock::start(|_| vies_error("MS_MAX_CONCURRENT_REQ"));
+    let (code, v) = mock.json(&["check", "DE136695976", "--live"], &[]);
+    let r = first(&v);
+    assert_eq!((code, r["status"].as_str()), (3, Some("rate_limited")));
+    assert_eq!(
+        r["message"],
+        "VIES is busy (MS_MAX_CONCURRENT_REQ). Try again in a minute."
+    );
+    assert_eq!(r["live"]["retry_after"], 60);
+    let got = mock.requests();
+    assert_eq!(got.len(), 3);
+    assert!(got[1].at - got[0].at >= std::time::Duration::from_secs(2));
+    assert!(got[2].at - got[1].at >= std::time::Duration::from_secs(4));
+}
+
+#[test]
+fn skips_a_country_after_two_failures_in_a_row() {
+    let mock = Mock::start(|r| match r.json()["countryCode"].as_str() {
+        Some("DE") => vies_error("MS_UNAVAILABLE"),
+        _ => reply(200, vies_ok("EXAMPLE SARL")),
+    });
+    let values = ["DE136695976", "DE129273398", "DE811569869", "FR0H384498879"];
+    let (code, v) = mock.json(
+        &[&["check"][..], &values, &["-t", "vat", "--live"]].concat(),
+        &[],
+    );
+    assert_eq!(code, 3);
+    let sent: Vec<String> = mock
+        .requests()
+        .iter()
+        .map(|r| r.json()["vatNumber"].to_string())
+        .collect();
+    assert_eq!(sent, ["\"136695976\"", "\"129273398\"", "\"0H384498879\""]);
+    let r = &v["results"];
+    assert_eq!(
+        r[2]["message"],
+        "Skipped: VIES (DE) failed twice in a row in this run. This is not a verdict on the number."
+    );
+    assert_eq!(
+        (r[2]["status"].as_str(), r[3]["status"].as_str()),
+        (Some("unavailable"), Some("valid"))
+    );
+}
+
+#[test]
+fn skips_a_source_it_cannot_reach() {
+    let mock = Mock::start(|_| Answer::Close);
+    let (code, v) = mock.json(
+        &[
+            "check",
+            "DE136695976",
+            "IE6388047V",
+            "FR0H384498879",
+            "-t",
+            "vat",
+            "--live",
+        ],
+        &[],
+    );
+    assert_eq!((code, mock.requests().len()), (3, 4));
+    assert_eq!(
+        v["results"][2]["message"],
+        "Skipped: VIES failed twice in a row in this run. This is not a verdict on the number."
+    );
+}
+
+#[test]
+fn holds_the_live_limit() {
+    let values = vec!["DE136695976"; 1001];
+    let (code, out, err) = vi(&[&["check", "--live"][..], &values].concat(), &[]);
+    assert_eq!((code, out.as_str()), (2, ""));
+    assert_eq!(
+        err,
+        "✗ 1001 values; at most 1,000 per run with --live.\n  Split the list, or check it offline first.\n"
+    );
+}

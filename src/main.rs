@@ -156,6 +156,7 @@ fn run(command: Command) -> Result<(String, u8), Error> {
         kind: Kind::ALL.into_iter().find(|k| k.name() == kind),
         region: region.as_deref().map(phone::region).transpose()?,
         live,
+        progress: live && !json && io::stderr().is_terminal(),
     };
     let start = Instant::now();
     let report = check::run(&values, &o)?;

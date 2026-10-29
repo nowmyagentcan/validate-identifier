@@ -30,17 +30,16 @@ const BUSY: [&str; 5] = [
 pub fn ask(c: &mut Client, items: &[&Item]) -> Result<Vec<Live>, Error> {
     let d = &items[0].details;
     let prefix = d["prefix"].as_str().unwrap_or_default();
-    let body = json!({"countryCode": prefix, "vatNumber": d["number"]});
-    let req = Request::post(c.url(&VIES, PATH))
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json")
-        .body(body.to_string().into_bytes())
-        .expect("a valid request");
-    let live = match c.send(&VIES, req) {
-        Ok(r) => answer(&r, prefix),
-        Err(failed) => failed,
+    let body = json!({"countryCode": prefix, "vatNumber": d["number"]}).to_string();
+    let url = c.url(&VIES, PATH);
+    let req = || {
+        Request::post(&url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .body(body.clone().into_bytes())
+            .expect("a valid request")
     };
-    Ok(vec![live])
+    Ok(vec![c.ask(&VIES, req, |r| Ok(answer(r, prefix)))?])
 }
 
 /// One answer as a live status (spec §3.6).
@@ -67,6 +66,7 @@ fn answer(r: &Reply, prefix: &str) -> Live {
         return Live {
             code: Some(code.into()),
             retry_after: busy.then_some(60),
+            retries: if busy { 2 } else { 0 },
             ..Live::new(VIES.name, status, message)
         };
     }

@@ -2,24 +2,29 @@
 //! server, so all three give the same JSON.
 
 use std::collections::HashMap;
+use std::io::Write;
 
 use rlibphonenumber::enums::Region;
 use serde::Serialize;
 
 use crate::detect::{ambiguous, detect, found};
-use crate::item::{DATA, Data, Error, Found, Item, Kind, Live, Summary, clean};
-use crate::live::{Client, Source};
+use crate::item::{DATA, Data, Error, Found, Item, Kind, Live, LiveStatus, Summary, clean};
+use crate::live::{Client, Source, unavailable};
 use crate::source::vies::{self, VIES};
 
 pub const MAX_VALUES: usize = 10_000;
 pub const MAX_BYTES: usize = 256;
+/// Values per run with live checks: the registries are for single lookups.
+pub const MAX_LIVE: usize = 1_000;
 
-/// `kind: None` detects each value's type; `live` asks the registries.
+/// `kind: None` detects each value's type; `live` asks the registries, drawing a progress
+/// line on stderr when `progress` is set.
 #[derive(Default)]
 pub struct Options {
     pub kind: Option<Kind>,
     pub region: Option<Region>,
     pub live: bool,
+    pub progress: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -43,6 +48,14 @@ pub fn run(values: &[String], o: &Options) -> Result<Report, Error> {
         let message = format!("{} values; at most 10,000 per run.", values.len());
         return Err(usage(message, "Split the list into smaller files."));
     }
+    if o.live && values.len() > MAX_LIVE {
+        let message = format!(
+            "{} values; at most 1,000 per run with --live.",
+            values.len()
+        );
+        let hint = "Split the list, or check it offline first.";
+        return Err(usage(message, hint));
+    }
     let mut seen: HashMap<&str, usize> = HashMap::new();
     let mut results: Vec<Item> = Vec::with_capacity(values.len());
     for v in values {
@@ -59,7 +72,7 @@ pub fn run(values: &[String], o: &Options) -> Result<Report, Error> {
         results.push(item);
     }
     if o.live {
-        live(&mut results)?;
+        live(&mut results, o.progress)?;
     }
     Ok(Report {
         summary: Summary::of(&results),
@@ -68,14 +81,16 @@ pub fn run(values: &[String], o: &Options) -> Result<Report, Error> {
     })
 }
 
-/// A registry and how to ask it about a list of values (one answer per value).
+/// A registry and how to ask it about up to `batch` values (one answer per value).
 struct Route {
     source: &'static Source,
+    batch: usize,
     ask: fn(&mut Client, &[&Item]) -> Result<Vec<Live>, Error>,
 }
 
 const ROUTES: [Route; 1] = [Route {
     source: &VIES,
+    batch: 1,
     ask: vies::ask,
 }];
 
@@ -92,8 +107,10 @@ fn route(i: &Item) -> Option<&'static Route> {
 }
 
 /// Asks each value's registry once, one source after another in input order, and applies
-/// the answers by the verdict rule.
-fn live(items: &mut [Item]) -> Result<(), Error> {
+/// the answers by the verdict rule. After two failures in a row a source (VIES: a country,
+/// when VIES itself says it is down) is skipped for the rest of the run; a source that needs
+/// credentials it doesn't have isn't asked again.
+fn live(items: &mut [Item], progress: bool) -> Result<(), Error> {
     let mut client = Client::new(&ROUTES.each_ref().map(|r| r.source))?;
     let mut lookups: Vec<(&Route, Vec<usize>)> = Vec::new();
     let mut seen: HashMap<(Option<Kind>, Option<&str>), usize> = HashMap::new();
@@ -108,17 +125,85 @@ fn live(items: &mut [Item]) -> Result<(), Error> {
             }
         }
     }
-    let mut answers = Vec::with_capacity(lookups.len());
+    let (total, mut done) = (lookups.len(), 0);
+    let mut failed: HashMap<String, u32> = HashMap::new();
+    let mut stuck: HashMap<&str, Live> = HashMap::new();
+    let mut answers = Vec::with_capacity(items.len());
     for r in &ROUTES {
-        for (_, same) in lookups.iter().filter(|(l, _)| std::ptr::eq(*l, r)) {
-            let live = (r.ask)(&mut client, &[&items[same[0]]])?;
-            answers.extend(same.iter().map(|&i| (i, live[0].clone())));
+        let name = r.source.name;
+        let mine: Vec<&Vec<usize>> = lookups
+            .iter()
+            .filter(|(l, _)| std::ptr::eq(*l, r))
+            .map(|(_, same)| same)
+            .collect();
+        for chunk in mine.chunks(r.batch) {
+            done += chunk.len();
+            if progress {
+                let dots = if crate::text::unicode(true) {
+                    "…"
+                } else {
+                    "..."
+                };
+                draw(&format!("Checking {done}/{total} ({name}){dots}"));
+            }
+            let firsts: Vec<&Item> = chunk.iter().map(|same| &items[same[0]]).collect();
+            let country = match name {
+                "VIES" => format!(
+                    "VIES ({})",
+                    firsts[0].details["prefix"].as_str().unwrap_or("")
+                ),
+                _ => name.into(),
+            };
+            let tripped = [name.to_string(), country.clone()]
+                .into_iter()
+                .find(|k| failed.get(k).is_some_and(|&n| n >= 2));
+            let lives = if let Some(live) = stuck.get(name) {
+                vec![live.clone(); chunk.len()]
+            } else if let Some(key) = tripped {
+                let message = format!(
+                    "Skipped: {key} failed twice in a row in this run. This is not a verdict on the number."
+                );
+                vec![unavailable(r.source, message); chunk.len()]
+            } else {
+                let lives = (r.ask)(&mut client, &firsts)?;
+                let first = &lives[0];
+                let own_code = first
+                    .code
+                    .as_deref()
+                    .is_some_and(|c| c.bytes().all(|b| b.is_ascii_uppercase() || b == b'_'));
+                match first.status {
+                    LiveStatus::Unavailable => {
+                        let key = if own_code { country } else { name.into() };
+                        *failed.entry(key).or_default() += 1;
+                    }
+                    LiveStatus::NotConfigured => {
+                        stuck.insert(name, first.clone());
+                    }
+                    _ => {
+                        failed.remove(name);
+                        failed.remove(&country);
+                    }
+                }
+                lives
+            };
+            for (same, live) in chunk.iter().zip(lives) {
+                answers.extend(same.iter().map(|&i| (i, live.clone())));
+            }
         }
+    }
+    if progress {
+        draw("");
     }
     for (i, live) in answers {
         items[i].answer(live);
     }
     Ok(())
+}
+
+/// Draws `line` over the last one on stderr (empty clears it); a closed stderr loses it.
+fn draw(line: &str) {
+    let end = if line.is_empty() { "\r" } else { "" };
+    let _ = write!(std::io::stderr(), "\r{line:<60}{end}");
 }
 
 /// One value's offline item.

@@ -153,6 +153,35 @@ impl Client {
     }
 }
 
+impl Client {
+    /// Sends a request built by `req` and reads the answer with `read`; a transient failure
+    /// is tried again (after 2 s, then 4 s, or the 429's `Retry-After`), never a timeout.
+    pub fn ask(
+        &mut self,
+        s: &Source,
+        req: impl Fn() -> Request<Vec<u8>>,
+        read: impl Fn(&Reply) -> Result<Live, Error>,
+    ) -> Result<Live, Error> {
+        let mut tries = 0;
+        loop {
+            let live = match self.send(s, req()) {
+                Ok(reply) => read(&reply)?,
+                Err(failed) => failed,
+            };
+            if tries >= live.retries {
+                return Ok(live);
+            }
+            let wait = match live.code.as_deref() {
+                Some("429") => live.retry_after.unwrap_or(2).max(2),
+                _ => 2 << tries,
+            };
+            debug(format!("{} again in {wait} s", s.name));
+            std::thread::sleep(Duration::from_secs(wait));
+            tries += 1;
+        }
+    }
+}
+
 /// `s`'s base URL: its override `url` when set, which must be https://, or http:// to this
 /// computer.
 fn base(s: &Source, url: Option<String>) -> Result<String, Error> {
