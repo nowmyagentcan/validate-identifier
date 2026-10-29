@@ -1,12 +1,12 @@
 use std::fs::File;
-use std::io::{self, ErrorKind, IsTerminal, Read, Write};
+use std::io::{self, BufWriter, ErrorKind, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::LazyLock;
 use std::time::Instant;
 
 use clap::{Parser, Subcommand};
-use validate_identifier::check::{self, Options, usage};
+use validate_identifier::check::{self, Options, Report, usage};
 use validate_identifier::interactive::{self, Session};
 use validate_identifier::item::Error;
 use validate_identifier::live;
@@ -155,8 +155,14 @@ fn read_values(path: &Path) -> Result<Vec<String>, Error> {
         .collect())
 }
 
+/// What `check` prints: text for a person, or the report as one JSON line.
+enum Answer {
+    Text(String),
+    Json(Report),
+}
+
 /// The report as JSON or text, and its exit code.
-fn run(args: CheckArgs) -> Result<(String, u8), Error> {
+fn run(args: CheckArgs) -> Result<(Answer, u8), Error> {
     let CheckArgs {
         values,
         kind,
@@ -198,12 +204,13 @@ fn run(args: CheckArgs) -> Result<(String, u8), Error> {
     let report = check::run(&values, &o)?;
     let n = report.results.len();
     live::debug(format!("checked {n} values in {:.1?}", start.elapsed()));
+    let code = report.summary.exit_code();
     let out = if json {
-        serde_json::to_string(&report).expect("results are plain data") + "\n"
+        Answer::Json(report)
     } else {
-        people(text::report(&report), &io::stdout())
+        Answer::Text(people(text::report(&report), &io::stdout()))
     };
-    Ok((out, report.summary.exit_code()))
+    Ok((out, code))
 }
 
 /// Text for a person, in ASCII when their console can't show Unicode.
@@ -215,13 +222,25 @@ fn people(text: String, stream: &impl IsTerminal) -> String {
     }
 }
 
-/// Writes the answer to stdout; a closed stdout ends quietly.
-fn emit(out: &str, code: u8) -> ExitCode {
-    let mut stdout = anstream::stdout().lock();
-    match stdout
-        .write_all(out.as_bytes())
-        .and_then(|()| stdout.flush())
-    {
+/// Writes the answer to stdout; a closed stdout ends quietly. JSON is written as it is
+/// serialised, so 10,000 results never sit in memory twice.
+fn emit(out: &Answer, code: u8) -> ExitCode {
+    let written = match out {
+        Answer::Text(text) => {
+            let mut stdout = anstream::stdout().lock();
+            stdout
+                .write_all(text.as_bytes())
+                .and_then(|()| stdout.flush())
+        }
+        Answer::Json(report) => {
+            let mut stdout = BufWriter::new(io::stdout().lock());
+            serde_json::to_writer(&mut stdout, report)
+                .map_err(io::Error::from)
+                .and_then(|()| writeln!(stdout))
+                .and_then(|()| stdout.flush())
+        }
+    };
+    match written {
         Ok(()) => ExitCode::from(code),
         Err(e) if e.kind() == ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         Err(e) => {
@@ -280,8 +299,10 @@ fn main() -> ExitCode {
     }
     let answer = match Cli::parse().command {
         Command::Check(args) => run(args),
-        Command::Ui { port, no_open } => ui::serve(port, !no_open).map(|()| (String::new(), 0)),
-        Command::Mcp => mcp::serve().map(|()| (String::new(), 0)),
+        Command::Ui { port, no_open } => {
+            ui::serve(port, !no_open).map(|()| (Answer::Text(String::new()), 0))
+        }
+        Command::Mcp => mcp::serve().map(|()| (Answer::Text(String::new()), 0)),
     };
     match answer {
         Ok((out, code)) => emit(&out, code),
