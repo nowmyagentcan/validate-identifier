@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{Answer, Mock, closed_port, reply, vi};
+use common::{Answer, GUID, HMRC_CREDS, Mock, TOKEN, closed_port, reply, vi};
 use serde_json::{Value, json};
 
 const UA: &str =
@@ -241,8 +241,7 @@ fn http_failures_are_unavailable_with_the_offline_result_kept() {
         ),
     ];
     for (answer, message) in cases {
-        let answer = std::sync::Mutex::new(Some(answer));
-        let mock = Mock::start(move |_| answer.lock().unwrap().take().unwrap_or(reply(500, "")));
+        let mock = in_turn(vec![answer], || reply(500, ""));
         let (code, v) = mock.json(&["check", "DE136695976", "--live"], &[]);
         let r = first(&v);
         assert_eq!(
@@ -545,18 +544,13 @@ fn stops_when_vies_rejects_the_requester() {
     );
 }
 
-const HMRC_CREDS: [(&str, &str); 2] = [
-    ("HMRC_CLIENT_ID", "id-abc123"),
-    ("HMRC_CLIENT_SECRET", "s3cret/xyz"),
-];
-
 /// A mock HMRC that hands out a token, then answers lookups with `lookup(path)`.
 fn hmrc(lookup: impl Fn(&str) -> Answer + Send + 'static) -> Mock {
     Mock::start(move |r| {
         match r.target.as_str() {
         "/oauth/token" => reply(
             200,
-            json!({"access_token": "tok-9f8e7d", "token_type": "bearer", "expires_in": 14400, "scope": "read:vat"})
+            json!({"access_token": TOKEN, "token_type": "bearer", "expires_in": 14400, "scope": "read:vat"})
                 .to_string(),
         ),
         path => lookup(path),
@@ -634,7 +628,10 @@ fn asks_hmrc_with_a_token_fetched_once() {
             lookup.header("accept"),
             Some("application/vnd.hmrc.2.0+json")
         );
-        assert_eq!(lookup.header("authorization"), Some("Bearer tok-9f8e7d"));
+        assert_eq!(
+            lookup.header("authorization"),
+            Some(format!("Bearer {TOKEN}").as_str())
+        );
         assert_eq!(lookup.header("user-agent"), Some(UA));
     }
     assert!(got[2].at - got[1].at >= std::time::Duration::from_millis(390));
@@ -772,19 +769,21 @@ fn maps_every_hmrc_answer() {
 }
 
 #[test]
-fn never_prints_hmrc_secrets_or_tokens() {
-    let mock = hmrc(|_| hmrc_ok());
+fn never_prints_secrets_even_with_debug() {
+    // Every run against the mock also checks its output for the test secrets.
+    let mock = hmrc(|path| match path.starts_with("/json/") {
+        true => abn_answer("51824753556", "Active", ""),
+        false => hmrc_ok(),
+    });
+    let env = [HMRC_CREDS[0], HMRC_CREDS[1], GUID];
     for args in [&["--json"][..], &[], &["--debug"]] {
-        let (code, out, err) = mock.run(
-            &[&["check", "GB434031439", "--live"][..], args].concat(),
-            &HMRC_CREDS,
+        let (code, _, err) = mock.run(
+            &[&["check", "GB434031439", "51824753556", "--live"][..], args].concat(),
+            &env,
         );
         assert_eq!(code, 0);
-        for secret in ["s3cret", "tok-9f8e7d", "id-abc123"] {
-            assert!(
-                !out.contains(secret) && !err.contains(secret),
-                "{secret} in {out}{err}"
-            );
+        if args == ["--debug"] {
+            assert!(err.contains("&guid=REDACTED "), "{err}");
         }
     }
 }
@@ -883,8 +882,7 @@ fn maps_every_uid_register_answer() {
         (uid, reply(200, "not xml"), "unavailable", 3),
     ];
     for (value, answer, status, exit) in cases {
-        let answer = std::sync::Mutex::new(Some(answer));
-        let mock = Mock::start(move |_| answer.lock().unwrap().take().unwrap());
+        let mock = in_turn(vec![answer], || reply(500, ""));
         let (code, v) = mock.json(&["check", value, "--live"], &[]);
         assert_eq!(
             (first(&v)["status"].as_str(), code),
@@ -922,8 +920,6 @@ fn reports_the_uid_register_limit() {
     );
 }
 
-const GUID: (&str, &str) = ("ABN_LOOKUP_GUID", "f0e1d2c3-b4a5-9687-7869-5a4b3c2d1e0f");
-
 fn abn_answer(abn: &str, status: &str, message: &str) -> Answer {
     let body = json!({
         "Abn": abn, "AbnStatus": status, "AbnStatusEffectiveFrom": "2000-03-14", "Acn": "",
@@ -959,16 +955,6 @@ fn asks_abn_lookup_with_the_guid_and_never_shows_it() {
                "abn_status": "Active", "abn_status_from": "2000-03-14", "gst_from": "2000-07-01",
                "state": "NSW", "postcode": "2000"})
     );
-    for args in [&["--json"][..], &[], &["--debug"]] {
-        let (_, out, err) = mock.run(
-            &[&["check", "51824753556", "--live"][..], args].concat(),
-            &[GUID],
-        );
-        assert!(!out.contains(GUID.1) && !err.contains(GUID.1), "{out}{err}");
-        if args == ["--debug"] {
-            assert!(err.contains("&guid=REDACTED "), "{err}");
-        }
-    }
 }
 
 #[test]
@@ -996,8 +982,7 @@ fn maps_every_abn_lookup_answer() {
         ),
     ];
     for (answer, status, message) in cases {
-        let answer = std::sync::Mutex::new(Some(answer));
-        let mock = Mock::start(move |_| answer.lock().unwrap().take().unwrap());
+        let mock = in_turn(vec![answer], || reply(500, ""));
         let (_, v) = mock.json(&["check", "51824753556", "--live"], &[GUID]);
         assert_eq!(
             (first(&v)["status"].as_str(), first(&v)["message"].as_str()),
@@ -1024,4 +1009,164 @@ fn maps_every_abn_lookup_answer() {
         first(&v)["message"],
         "ABN checks need your own ABN Lookup GUID."
     );
+}
+
+/// A valid LEI ending in `n` (ISO 17442 check digits computed).
+fn lei(n: usize) -> String {
+    let base = format!("5493{n:014}");
+    let rem = format!("{base}00")
+        .bytes()
+        .fold(0u32, |r, b| (r * 10 + u32::from(b - b'0')) % 97);
+    format!("{base}{:02}", 98 - rem)
+}
+
+fn gleif_record(lei: &str, registration: &str, entity: &str) -> Value {
+    json!({"type": "lei-records", "id": lei, "attributes": {
+        "lei": lei,
+        "entity": {"legalName": {"name": format!("EXAMPLE {lei}"), "language": "en"}, "status": entity},
+        "registration": {"status": registration, "nextRenewalDate": "2027-06-28T18:34:06Z",
+                         "managingLou": "5493001KJTIIGC8Y1R12"}
+    }})
+}
+
+#[test]
+fn asks_gleif_in_batches_of_100() {
+    let leis: Vec<String> = (0..150).map(lei).collect();
+    let mock = Mock::start(|r| {
+        // Every LEI the request names, except the tenth, is issued.
+        let query = r.target.split("filter%5Blei%5D=").nth(1).unwrap();
+        let asked = query.split('&').next().unwrap().split(',');
+        let data: Vec<Value> = asked
+            .filter(|l| *l != lei(9))
+            .map(|l| gleif_record(l, "ISSUED", "ACTIVE"))
+            .collect();
+        reply(200, json!({"meta": {}, "data": data}).to_string())
+    });
+    let args: Vec<&str> = leis.iter().map(String::as_str).collect();
+    let (code, v) = mock.json(&[&["check", "--live"][..], &args].concat(), &[]);
+    assert_eq!(code, 1);
+    let got = mock.requests();
+    assert_eq!(got.len(), 2);
+    assert!(got[1].at - got[0].at >= std::time::Duration::from_millis(1090));
+    assert_eq!(
+        got[0].target,
+        format!(
+            "/api/v1/lei-records?filter%5Blei%5D={}&page%5Bsize%5D=100",
+            leis[..100].join(",")
+        )
+    );
+    assert_eq!(got[0].header("accept"), Some("application/vnd.api+json"));
+    assert_eq!(
+        (
+            v["summary"]["valid"].as_u64(),
+            v["summary"]["not_found"].as_u64()
+        ),
+        (Some(149), Some(1))
+    );
+    assert_eq!(v["results"][9]["message"], "Not found in GLEIF.");
+    let r = first(&v);
+    assert_eq!(
+        r["live"]["data"],
+        json!({"legal_name": format!("EXAMPLE {}", leis[0]), "entity_status": "ACTIVE",
+               "registration_status": "ISSUED", "next_renewal_date": "2027-06-28T18:34:06Z",
+               "managing_lou": "5493001KJTIIGC8Y1R12"})
+    );
+    assert!(
+        r["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Registration ISSUED in GLEIF (")
+    );
+}
+
+#[test]
+fn maps_every_gleif_answer() {
+    let one = |registration, entity| {
+        reply(
+            200,
+            json!({"data": [gleif_record(&lei(1), registration, entity)]}).to_string(),
+        )
+    };
+    let busy = Answer::Reply(429, vec![("Retry-After", "45".into())], String::new());
+    let cases = [
+        (
+            one("PENDING_TRANSFER", "ACTIVE"),
+            "valid",
+            "Registration PENDING_TRANSFER in GLEIF (",
+        ),
+        (
+            one("LAPSED", "ACTIVE"),
+            "inactive",
+            "GLEIF lists this LEI as LAPSED (entity ACTIVE).",
+        ),
+        (
+            one("ISSUED", "INACTIVE"),
+            "inactive",
+            "GLEIF lists this LEI as ISSUED (entity INACTIVE).",
+        ),
+        (reply(404, ""), "not_found", "Not found in GLEIF."),
+        (
+            busy,
+            "rate_limited",
+            "GLEIF asked us to slow down (429). Try again in 45 s.",
+        ),
+        (
+            reply(200, "{}"),
+            "unavailable",
+            "GLEIF sent a response we couldn't read.",
+        ),
+    ];
+    for (answer, status, message) in cases {
+        let mock = in_turn(vec![answer], || reply(500, ""));
+        let (_, v) = mock.json(&["check", &lei(1), &lei(2), "--live"], &[]);
+        let r = first(&v);
+        assert_eq!(r["status"], status, "{message}");
+        assert!(r["message"].as_str().unwrap().starts_with(message), "{r}");
+        // The batch's second LEI shares the answer, or is left out of it.
+        let second = v["results"][1]["status"].as_str();
+        assert!(second == Some(status) || second == Some("not_found"), "{v}");
+        assert_eq!(mock.requests().len(), 1, "{message}");
+    }
+}
+
+#[test]
+fn without_a_network_every_live_check_is_unavailable_and_keeps_its_offline_result() {
+    let url = closed_port();
+    let mut env: Vec<(&str, &str)> = common::SOURCES.iter().map(|&v| (v, url.as_str())).collect();
+    env.extend([HMRC_CREDS[0], HMRC_CREDS[1], GUID]);
+    let leis = lei(1);
+    let values = [
+        "DE136695976",
+        "GB434031439",
+        "CHE-116.281.710",
+        "51824753556",
+        &leis,
+    ];
+    let (code, out, _) = vi(
+        &[
+            &["check", "--live", "--json", "DE44500105175407324931"][..],
+            &values,
+        ]
+        .concat(),
+        &env,
+    );
+    assert_eq!(code, 3);
+    let v: Value = serde_json::from_str(&out).unwrap();
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results[0]["status"], "valid");
+    let sources: Vec<&str> = results[1..]
+        .iter()
+        .map(|r| r["live"]["source"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        sources,
+        ["VIES", "HMRC", "UID register", "ABN Lookup", "GLEIF"]
+    );
+    for r in &results[1..] {
+        assert_eq!(
+            (r["status"].as_str(), r["offline"]["valid"].as_bool()),
+            (Some("unavailable"), Some(true)),
+            "{r}"
+        );
+    }
 }

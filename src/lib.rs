@@ -9,6 +9,7 @@ pub mod peppol;
 pub mod phone;
 pub mod source {
     pub mod abn;
+    pub mod gleif;
     pub mod hmrc;
     pub mod uid;
     pub mod vies;

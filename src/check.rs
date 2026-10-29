@@ -13,6 +13,7 @@ use crate::item::{
 };
 use crate::live::{Client, Source, unavailable};
 use crate::source::abn::{self, ABN};
+use crate::source::gleif::{self, GLEIF};
 use crate::source::hmrc::{self, HMRC};
 use crate::source::uid::{self, UID};
 use crate::source::vies::{self, VIES};
@@ -109,7 +110,7 @@ struct Route {
     ask: fn(&mut Client, &[&Item]) -> Result<Vec<Live>, Error>,
 }
 
-const ROUTES: [Route; 4] = [
+const ROUTES: [Route; 5] = [
     Route {
         source: &VIES,
         batch: 1,
@@ -130,6 +131,11 @@ const ROUTES: [Route; 4] = [
         batch: 1,
         ask: abn::ask,
     },
+    Route {
+        source: &GLEIF,
+        batch: 100,
+        ask: gleif::ask,
+    },
 ];
 
 /// The registry for an item whose format passed (its check digits may have failed).
@@ -146,6 +152,7 @@ fn route(i: &Item) -> Option<&'static Route> {
         (true, Kind::Vat, Some("GB")) if digits => Some(&ROUTES[1]),
         (true, Kind::Vat, Some("CHE")) | (true, Kind::Uid, _) => Some(&ROUTES[2]),
         (true, Kind::Abn, _) => Some(&ROUTES[3]),
+        (true, Kind::Lei, _) => Some(&ROUTES[4]),
         (true, Kind::Vat, Some(p)) if p != "GB" && p != "CHE" => Some(&ROUTES[0]),
         _ => None,
     }

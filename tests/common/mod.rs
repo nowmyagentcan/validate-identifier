@@ -21,6 +21,14 @@ pub const SOURCES: [&str; 5] = [
     "VALIDATE_IDENTIFIER_GLEIF_URL",
 ];
 
+/// Test credentials; no run against the mock may print them.
+pub const HMRC_CREDS: [(&str, &str); 2] = [
+    ("HMRC_CLIENT_ID", "id-abc123"),
+    ("HMRC_CLIENT_SECRET", "s3cret/xyz"),
+];
+pub const GUID: (&str, &str) = ("ABN_LOOKUP_GUID", "f0e1d2c3-b4a5-9687-7869-5a4b3c2d1e0f");
+pub const TOKEN: &str = "tok-9f8e7d";
+
 /// One request as the mock received it.
 #[derive(Clone, Debug)]
 pub struct Request {
@@ -82,7 +90,20 @@ impl Mock {
     pub fn run(&self, args: &[&str], env: &[(&str, &str)]) -> (i32, String, String) {
         let mut all: Vec<(&str, &str)> = SOURCES.iter().map(|&v| (v, self.url.as_str())).collect();
         all.extend_from_slice(env);
-        vi(args, &all)
+        let (code, out, err) = vi(args, &all);
+        for secret in [
+            HMRC_CREDS[0].1,
+            HMRC_CREDS[1].1,
+            "s3cret%2Fxyz",
+            GUID.1,
+            TOKEN,
+        ] {
+            assert!(
+                !out.contains(secret) && !err.contains(secret),
+                "{secret}: {out}{err}"
+            );
+        }
+        (code, out, err)
     }
 
     /// The `--json` answer of a run against the mock.
