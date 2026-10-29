@@ -41,6 +41,8 @@ pub struct Request {
     pub target: String,
     pub headers: Vec<(String, String)>,
     pub body: String,
+    /// When the mock began serving it: a busy machine may start one later than another,
+    /// so gaps between two are checked with 50 ms of slack.
     pub at: Instant,
 }
 

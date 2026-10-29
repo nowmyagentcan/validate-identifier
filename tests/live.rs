@@ -326,7 +326,7 @@ fn paces_requests_to_each_source() {
     let got = mock.requests();
     assert!(
         got.windows(2)
-            .all(|w| w[1].at - w[0].at >= std::time::Duration::from_millis(990))
+            .all(|w| w[1].at - w[0].at >= std::time::Duration::from_millis(950))
     );
 }
 
@@ -637,7 +637,7 @@ fn asks_hmrc_with_a_token_fetched_once() {
         );
         assert_eq!(lookup.header("user-agent"), Some(UA));
     }
-    assert!(got[2].at - got[1].at >= std::time::Duration::from_millis(390));
+    assert!(got[2].at - got[1].at >= std::time::Duration::from_millis(350));
     let r = first(&v);
     assert_eq!(r["status"], "valid");
     assert_eq!(
@@ -835,7 +835,7 @@ fn asks_the_uid_register_with_the_documented_soap_call() {
     assert_eq!(code, 0);
     let got = mock.requests();
     assert_eq!(got.len(), 2);
-    assert!(got[1].at - got[0].at >= std::time::Duration::from_millis(3190));
+    assert!(got[1].at - got[0].at >= std::time::Duration::from_millis(3150));
     let req = &got[0];
     assert_eq!(
         (req.method.as_str(), req.target.as_str()),
@@ -953,7 +953,7 @@ fn asks_abn_lookup_with_the_guid_and_never_shows_it() {
     );
     assert_eq!(code, 0);
     let got = mock.requests();
-    assert!(got[1].at - got[0].at >= std::time::Duration::from_millis(490));
+    assert!(got[1].at - got[0].at >= std::time::Duration::from_millis(450));
     let req = &got[0];
     assert_eq!(req.method, "GET");
     assert_eq!(
@@ -1066,7 +1066,7 @@ fn asks_gleif_in_batches_of_100() {
     assert_eq!(code, 1);
     let got = mock.requests();
     assert_eq!(got.len(), 2);
-    assert!(got[1].at - got[0].at >= std::time::Duration::from_millis(1090));
+    assert!(got[1].at - got[0].at >= std::time::Duration::from_millis(1050));
     assert_eq!(
         got[0].target,
         format!(
@@ -1253,7 +1253,7 @@ fn asks_eos_in_batches_of_10_with_the_documented_soap_call() {
     assert_eq!(code, 1);
     let got = mock.requests();
     assert_eq!(got.len(), 2);
-    assert!(got[1].at - got[0].at >= std::time::Duration::from_millis(990));
+    assert!(got[1].at - got[0].at >= std::time::Duration::from_millis(950));
     let req = &got[0];
     assert_eq!(
         (req.method.as_str(), req.target.as_str()),

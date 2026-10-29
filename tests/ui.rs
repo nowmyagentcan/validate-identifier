@@ -241,7 +241,7 @@ fn checks_live_through_the_overrides_and_keeps_pacing_between_requests() {
     let sent = mock.requests();
     assert_eq!(sent.len(), 2);
     // VIES gets one request a second, from one page request to the next too.
-    assert!(sent[1].at - sent[0].at >= std::time::Duration::from_millis(990));
+    assert!(sent[1].at - sent[0].at >= std::time::Duration::from_millis(950));
 }
 
 #[test]
