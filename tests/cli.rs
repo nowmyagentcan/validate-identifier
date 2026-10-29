@@ -224,3 +224,92 @@ fn holds_the_input_limits() {
         assert_eq!((code, out.as_str()), (2, ""), "{args:?}");
     }
 }
+
+#[test]
+fn prints_text_for_people() {
+    let (code, out, err) = run(&[
+        "check",
+        "DE44500105175407324931",
+        "+44 20 7946 0958",
+        "DE136695976",
+        "GB82WEST1234569876543",
+        "hello",
+    ]);
+    assert_eq!((code, err.as_str()), (1, ""));
+    assert_eq!(
+        out,
+        "\
+✓ DE44500105175407324931  IBAN · DE   valid · DE44 5001 0517 5407 3249 31
+✓ +442079460958           Phone · GB  valid · fixed line · +44 20 7946 0958
+✓ DE136695976             VAT · DE    valid · Format and check digits pass. Not checked against VIES; add --live to confirm registration.
+  ! Also a valid eori format; pass --type to check it as one.
+✗ GB82WEST1234569876543   IBAN · GB   invalid · Wrong length for a GB IBAN (21 characters).
+                                      Check for a missing or extra character.
+✗ hello                   Unknown     invalid · Can't tell what kind of identifier this is.
+                                      Pass --type (iban, vat, phone, email, lei, abn, uid, eori, peppol).
+5 checked: 3 valid, 2 invalid
+"
+    );
+    // One value: one line, no summary.
+    let (_, out, _) = run(&["check", "DE44500105175407324931"]);
+    assert_eq!(
+        out,
+        "✓ DE44500105175407324931  IBAN · DE  valid · DE44 5001 0517 5407 3249 31\n"
+    );
+    // A value over 34 characters pushes its own line instead of padding the others.
+    let long = "0208:0202239951-and-a-very-long-suffix";
+    let (_, out, _) = run(&["check", long, "DE44500105175407324931"]);
+    assert!(
+        out.contains(&format!("✓ {long}  Peppol     valid · ")),
+        "{out}"
+    );
+    assert!(
+        out.contains("✓ DE44500105175407324931  IBAN · DE  valid"),
+        "{out}"
+    );
+}
+
+#[test]
+fn colours_only_when_asked_and_never_with_no_color() {
+    let args = ["check", "DE44500105175407324931", "hello"];
+    let (_, out, _) = run(&args);
+    assert!(!out.contains('\x1b'));
+    let forced = |no_color: &str| {
+        let out = vi(&args)
+            .env("CLICOLOR_FORCE", "1")
+            .env("NO_COLOR", no_color)
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap()
+    };
+    assert!(!forced("1").contains('\x1b'));
+    if cfg!(not(windows)) {
+        // Windows turns ANSI codes into console calls, which a pipe can't take.
+        let out = forced("");
+        assert!(out.starts_with("\x1b[32m✓\x1b[0m \x1b[1mDE44500105175407324931\x1b[0m  \x1b[2mIBAN · DE\x1b[0m  \x1b[32mvalid\x1b[0m"), "{out:?}");
+        assert!(out.contains("\x1b[31m✗\x1b[0m"), "{out:?}");
+    }
+}
+
+#[test]
+fn shows_the_sentence_types_and_examples_in_help() {
+    for args in [&["--help"][..], &["-h"], &["check", "--help"]] {
+        let (code, out, _) = run(args);
+        assert_eq!(code, 0);
+        assert!(
+            out.contains("\nTypes: iban, vat (EU, XI, GB, CH), phone, email, lei, abn, uid (Swiss), eori, peppol.\n"),
+            "{args:?}"
+        );
+        assert!(
+            out.contains("\nExamples:\n  validate-identifier check DE44500105175407324931\n"),
+            "{args:?}"
+        );
+        assert!(out.ends_with("NO_COLOR  no colour\n"), "{args:?}");
+    }
+    let (_, out, _) = run(&["--help"]);
+    assert!(
+        out.starts_with("Check VAT numbers, IBANs, phone numbers, emails, LEIs and Peppol IDs.\n")
+    );
+    let (_, out, _) = run(&["check", "--help"]);
+    assert!(out.contains("[default: auto]"));
+}

@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{self, ErrorKind, Read};
+use std::io::{self, ErrorKind, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::LazyLock;
@@ -7,11 +7,9 @@ use std::sync::LazyLock;
 use clap::{Parser, Subcommand};
 use validate_identifier::check::{self, Options, usage};
 use validate_identifier::item::{Error, Kind};
-use validate_identifier::phone;
+use validate_identifier::{phone, text};
 
 static VERSION: LazyLock<String> = LazyLock::new(validate_identifier::version);
-
-const SENTENCE: &str = "Check VAT numbers, IBANs, phone numbers, emails, LEIs and Peppol IDs.";
 
 const EXAMPLES: &str =
     "Types: iban, vat (EU, XI, GB, CH), phone, email, lei, abn, uid (Swiss), eori, peppol.
@@ -20,7 +18,10 @@ const EXAMPLES: &str =
   validate-identifier check DE44500105175407324931
   validate-identifier check \"+44 20 7946 0958\" \"07911 123456\" -r GB
   validate-identifier check BE0202239951 -t peppol
-  validate-identifier check -f customers.txt --json";
+  validate-identifier check -f customers.txt --json
+
+[1;4mEnvironment:[0m
+  NO_COLOR  no colour";
 
 const TYPES: [&str; 10] = [
     "auto", "iban", "vat", "phone", "email", "lei", "abn", "uid", "eori", "peppol",
@@ -30,7 +31,7 @@ const TYPES: [&str; 10] = [
 #[command(
     name = "validate-identifier",
     bin_name = "validate-identifier",
-    about = SENTENCE,
+    about = text::SENTENCE,
     override_usage = "validate-identifier [COMMAND]",
     version = VERSION.as_str(),
     after_help = EXAMPLES,
@@ -113,7 +114,7 @@ fn read_values(path: &Path) -> Result<Vec<String>, Error> {
         .collect())
 }
 
-/// The report as JSON or one line per value, and its exit code.
+/// The report as JSON or text, and its exit code.
 fn run(command: Command) -> Result<(String, u8), Error> {
     let Command::Check {
         values,
@@ -134,17 +135,18 @@ fn run(command: Command) -> Result<(String, u8), Error> {
     let out = if json {
         serde_json::to_string(&report).expect("results are plain data") + "\n"
     } else {
-        let line = |i: &validate_identifier::item::Item| {
-            format!(
-                "{}  {:?}  {}\n",
-                i.value.as_ref().unwrap_or(&i.input),
-                i.status,
-                i.message
-            )
-        };
-        report.results.iter().map(line).collect()
+        people(text::report(&report), &io::stdout())
     };
     Ok((out, report.summary.exit_code()))
+}
+
+/// Text for a person, in ASCII when their console can't show Unicode.
+fn people(text: String, stream: &impl IsTerminal) -> String {
+    if text::unicode(stream.is_terminal()) {
+        text
+    } else {
+        text::ascii(&text)
+    }
 }
 
 fn main() -> ExitCode {
@@ -156,14 +158,11 @@ fn main() -> ExitCode {
     };
     match answer {
         Ok((out, code)) => {
-            print!("{out}");
+            anstream::print!("{out}");
             ExitCode::from(code)
         }
         Err(e) => {
-            eprintln!("✗ {}", e.message);
-            if let Some(hint) = e.hint {
-                eprintln!("  {hint}");
-            }
+            anstream::eprint!("{}", people(text::error(&e), &io::stderr()));
             ExitCode::from(if e.code == "io" { 3 } else { 2 })
         }
     }

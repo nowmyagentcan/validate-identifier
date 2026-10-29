@@ -6,6 +6,7 @@ pub mod ids;
 pub mod item;
 pub mod peppol;
 pub mod phone;
+pub mod text;
 pub mod vat;
 
 pub const PHONE_METADATA: &str = "9.0.42";
