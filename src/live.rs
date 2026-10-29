@@ -57,11 +57,20 @@ pub fn secret(s: &str) {
     }
 }
 
-/// `text` with every secret replaced by REDACTED.
+/// `text` with every secret replaced by REDACTED, in any letter case: a registry may send
+/// the sent form back with its hex digits in lower case.
 fn redact(text: &str) -> String {
     let mut text = text.to_string();
     for s in SECRETS.lock().unwrap().iter() {
-        text = text.replace(s.as_str(), "REDACTED");
+        // ASCII case changes keep every byte where it is, so offsets carry over.
+        let lower = text.to_ascii_lowercase();
+        let (mut out, mut last) = (String::new(), 0);
+        for (at, _) in lower.match_indices(&s.to_ascii_lowercase()) {
+            out += &text[last..at];
+            out += "REDACTED";
+            last = at + s.len();
+        }
+        text = out + &text[last..];
     }
     text
 }
@@ -326,13 +335,17 @@ fn base(s: &Source, url: Option<String>) -> Result<String, Error> {
     };
     let url = url.trim_end_matches('/');
     let https = url.len() > "https://".len() && url.starts_with("https://");
+    let uri = url.parse::<ureq::http::Uri>();
     let message = if !https && !local_http(url) {
         format!(
             "{} must start with https:// (http:// only for 127.0.0.1, [::1] or localhost).",
             s.var
         )
-    } else if url.parse::<ureq::http::Uri>().is_err() {
+    } else if uri.is_err() {
         format!("{} isn't a valid URL.", s.var)
+    } else if uri.is_ok_and(|u| u.authority().is_some_and(|a| a.as_str().contains('@'))) {
+        // It would be sent to the registry and could be printed: never take one.
+        format!("{} must not hold a user name or password.", s.var)
     } else {
         return Ok(url.into());
     };
@@ -360,7 +373,8 @@ pub fn unavailable(s: &Source, message: impl Into<String>) -> Live {
 
 /// `unavailable` for an answer that isn't in the source's documented shape.
 pub fn unreadable(s: &Source, body: &str) -> Live {
-    let head: String = body.chars().take(500).collect();
+    // Redacted before the cut, so the cut can't leave part of a secret.
+    let head: String = redact(body).chars().take(500).collect();
     debug(format!("{} answer we couldn't read: {head}", s.name));
     unavailable(s, format!("{} sent a response we couldn't read.", s.name))
 }
@@ -502,6 +516,19 @@ mod tests {
         for bad in ["http://127.0.0.1:1/bad path", "https://exa mple.org"] {
             let e = with(bad).unwrap_err();
             assert_eq!(e.message, "VALIDATE_IDENTIFIER_TEST_URL isn't a valid URL.");
+        }
+        for bad in [
+            "https://user:pa55@example.org/vies",
+            "https://user@example.org",
+        ] {
+            let e = with(bad).unwrap_err();
+            assert_eq!(
+                e.message,
+                "VALIDATE_IDENTIFIER_TEST_URL must not hold a user name or password."
+            );
+        }
+        for ok in ["https://example.org/a@b", "https://example.org?a@b"] {
+            assert!(with(ok).is_ok(), "{ok}");
         }
         assert_eq!(with("").unwrap(), "https://example.org");
     }

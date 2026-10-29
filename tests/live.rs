@@ -2007,7 +2007,7 @@ fn a_registered_participant_stays_valid_when_its_smp_fails() {
                 String::new(),
             ),
             "smp_unavailable",
-            why("a redirect to a non-https address"),
+            why("a redirect to an address we don't follow"),
         ),
     ];
     for (answer, code, message) in cases {
@@ -2030,6 +2030,33 @@ fn a_registered_participant_stays_valid_when_its_smp_fails() {
             Value::Null
         );
     }
+}
+
+#[test]
+fn never_follows_or_prints_a_password_in_an_smp_redirect() {
+    let to = "https://user:pa55word@127.0.0.1:1/smp/x";
+    let mock =
+        Mock::start(move |_| Answer::Reply(302, vec![("Location", to.into())], String::new()));
+    let stub = sml_stub(&["0208:0000000097"], &[], format!("{}/smp/", mock.url));
+    let args = [
+        "check",
+        "0208:0000000097",
+        "--live",
+        "--json",
+        "--debug",
+        "--dns",
+        &stub.addr,
+    ];
+    let (code, out, err) = mock.run(&args, &[ZONE]);
+    assert_eq!((code, mock.requests().len()), (0, 1));
+    assert!(
+        out.contains("a redirect to an address we don't follow"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("pa55word") && !err.contains("pa55word"),
+        "{out}{err}"
+    );
 }
 
 #[test]
@@ -2297,7 +2324,6 @@ fn never_prints_a_secret_from_a_batch_answer_or_in_its_sent_form() {
 }
 
 #[test]
-#[ignore = "known bug: R3-F01"]
 fn never_prints_a_secret_sent_back_in_lowercase_percent_encoding() {
     let echo = Mock::start(|_| reply(401, json!({"error": "s3cret%2fxyz"}).to_string()));
     // `run` fails the test when a secret reaches stdout or stderr.
@@ -2305,7 +2331,6 @@ fn never_prints_a_secret_sent_back_in_lowercase_percent_encoding() {
 }
 
 #[test]
-#[ignore = "known bug: R3-F01"]
 fn never_prints_part_of_a_secret_cut_off_in_a_debug_line() {
     let body = "x".repeat(480) + GUID.1;
     let mock = Mock::start(move |_| reply(200, body.clone()));
@@ -2315,16 +2340,23 @@ fn never_prints_part_of_a_secret_cut_off_in_a_debug_line() {
 }
 
 #[test]
-#[ignore = "known bug: R3-F01"]
-fn debug_lines_leave_out_the_password_in_a_base_url() {
-    let url = hang_up_port().replace("http://", "https://user:pa55word@");
-    let (code, _, err) = vi(
-        &["check", "DE136695976", "--live", "--debug"],
-        &[("VALIDATE_IDENTIFIER_VIES_URL", &url)],
-    );
-    assert_eq!(code, 3);
-    assert!(err.contains("debug: VIES POST https://"), "{err}");
-    assert!(!err.contains("pa55word"), "{err}");
+fn refuses_a_password_in_a_base_url_and_never_prints_it() {
+    let mock = Mock::start(|_| reply(200, vies_ok("EXAMPLE GMBH")));
+    let url = mock.url.replace("http://", "https://user:pa55word@");
+    for json in [&[][..], &["--json"]] {
+        let args = [&["check", "DE136695976", "--live", "--debug"][..], json].concat();
+        let (code, out, err) = vi(&args, &[("VALIDATE_IDENTIFIER_VIES_URL", &url)]);
+        assert_eq!(code, 2);
+        assert!(
+            err.contains("VALIDATE_IDENTIFIER_VIES_URL must not hold a user name or password."),
+            "{err}"
+        );
+        assert!(
+            !out.contains("pa55word") && !err.contains("pa55word"),
+            "{out}{err}"
+        );
+    }
+    assert!(mock.requests().is_empty());
 }
 
 #[test]

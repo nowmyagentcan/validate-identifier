@@ -144,11 +144,8 @@ fn find(c: &mut Client, id: &str, zone: Option<&str>) -> Sml {
             _ => None,
         })
         .collect();
-    let url = smp_url(&naptr).filter(|url| {
-        let https = url.starts_with("https://") || (zone.is_some() && local_http(url));
-        let authority = url.split('/').nth(2).unwrap_or_default();
-        https && !authority.is_empty() && !authority.contains('@') && !url.contains(['?', '#'])
-    });
+    let url =
+        smp_url(&naptr).filter(|url| may_ask(url, zone.is_some()) && !url.contains(['?', '#']));
     match url {
         Some(url) => Sml::Registered(url),
         None => Sml::Failed(unavailable(
@@ -203,11 +200,21 @@ fn service_group(c: &mut Client, smp: &str, id: &str, test: bool) -> Result<Valu
                         true => format!("{}{l}", origin.join("/")),
                         false => l,
                     })
-                    .filter(|l| l.starts_with("https://") || (test && local_http(l)));
-                url = next.ok_or_else(|| smp_unavailable("a redirect to a non-https address"))?;
+                    .filter(|l| may_ask(l, test));
+                url = next
+                    .ok_or_else(|| smp_unavailable("a redirect to an address we don't follow"))?;
             }
             status => return Err(smp_unavailable(&format!("HTTP {status}"))),
         }
     }
     Err(smp_unavailable("more than 3 redirects"))
+}
+
+/// Whether an SMP at `url` may be asked: https (http only to this computer in `test`), with
+/// no user name or password, which would be sent on and could be printed.
+fn may_ask(url: &str, test: bool) -> bool {
+    let authority = url.split('/').nth(2).unwrap_or_default();
+    (url.starts_with("https://") || (test && local_http(url)))
+        && !authority.is_empty()
+        && !authority.contains('@')
 }
