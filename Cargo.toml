@@ -8,6 +8,7 @@ repository = "https://github.com/nowmyagentcan/validate-identifier"
 publish = false
 
 [dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
 iban_validation_rs = "=0.1.30"
 idna = "1.1.0"
 ring = { version = "0.17.14", default-features = false }

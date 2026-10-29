@@ -18,6 +18,18 @@ pub enum Kind {
 const PEPPOL_SCHEME: &str = "iso6523-actorid-upis::";
 
 impl Kind {
+    pub const ALL: [Kind; 9] = [
+        Kind::Iban,
+        Kind::Vat,
+        Kind::Phone,
+        Kind::Email,
+        Kind::Lei,
+        Kind::Abn,
+        Kind::Uid,
+        Kind::Eori,
+        Kind::Peppol,
+    ];
+
     /// The name in JSON and on the command line.
     pub fn name(self) -> &'static str {
         match self {
@@ -169,13 +181,13 @@ impl Found {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Offline {
     pub valid: bool,
     pub checks: Vec<Check>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Item {
     pub input: String,
     #[serde(rename = "type")]
@@ -187,6 +199,8 @@ pub struct Item {
     pub message: String,
     pub offline: Offline,
     pub details: Value,
+    /// The registry's answer; null for offline checks.
+    pub live: Option<Value>,
     pub error: Option<Error>,
     pub warnings: Vec<Warning>,
 }
@@ -211,6 +225,7 @@ impl Item {
                 checks: found.checks,
             },
             details: found.details,
+            live: None,
             error,
             warnings: found.warnings,
         }
@@ -230,6 +245,16 @@ pub struct Summary {
 }
 
 impl Summary {
+    /// 0 when all are valid, 1 when any is invalid, inactive or not found, else 3: some
+    /// couldn't be confirmed.
+    pub fn exit_code(&self) -> u8 {
+        match self {
+            s if s.invalid + s.inactive + s.not_found > 0 => 1,
+            s if s.valid < s.total => 3,
+            _ => 0,
+        }
+    }
+
     pub fn of(items: &[Item]) -> Self {
         let mut s = Summary {
             total: items.len(),
@@ -354,6 +379,7 @@ mod tests {
                     {"name": "format", "pass": true}, {"name": "check_digits", "pass": true}
                 ]},
                 "details": {"prefix": "DE", "number": "136695976", "branch": null},
+                "live": null,
                 "error": null,
                 "warnings": []
             })

@@ -1,3 +1,4 @@
+pub mod check;
 pub mod detect;
 pub mod email;
 pub mod iban;
@@ -11,9 +12,10 @@ pub const PHONE_METADATA: &str = "9.0.42";
 pub const IBAN_REGISTRY: &str = "103";
 pub const PEPPOL_CODE_LIST: &str = "9.7";
 
+/// The version with its data versions, as `--version` prints it after the name.
 pub fn version() -> String {
     format!(
-        "validate-identifier {} (phone data {PHONE_METADATA}, IBAN registry {IBAN_REGISTRY}, Peppol code list {PEPPOL_CODE_LIST})",
+        "{} (phone data {PHONE_METADATA}, IBAN registry {IBAN_REGISTRY}, Peppol code list {PEPPOL_CODE_LIST})",
         env!("CARGO_PKG_VERSION")
     )
 }

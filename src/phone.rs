@@ -109,6 +109,19 @@ pub fn check(v: &str, region: Option<Region>) -> Found {
     }
 }
 
+/// The `--region` for numbers without +: a 2-letter code the phone data has a country for.
+pub fn region(code: &str) -> Result<Region, Error> {
+    Region::from_code(code)
+        .ok()
+        .filter(|&r| {
+            r != Region::World && PHONE_NUMBER_UTIL.get_country_code_for_region(r).is_some()
+        })
+        .ok_or_else(|| {
+            let hint = Some("Use a 2-letter ISO country code, e.g. GB.");
+            Error::new("usage", format!("Unknown region {code}."), hint)
+        })
+}
+
 /// The JSON name of a number type and its words for messages.
 fn number_type(t: Type) -> (&'static str, &'static str) {
     match t {
