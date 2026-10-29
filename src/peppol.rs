@@ -83,43 +83,27 @@ pub fn mapped(kind: Kind, f: Found) -> Found {
     }
 }
 
-/// The VAT schemes of code list 9.7: most are the prefix and number, lower case, under the
+/// The countries whose VAT scheme in code list 9.7 is the prefix and number under a 99xx code.
+const SCHEMES: &str = "AT9914 BG9926 CY9928 CZ9929 DE9930 EE9931 ES9920 FR9957 GB9932 HR9934     HU9910 IE9935 LT9937 LU9938 LV9939 MT9943 NL9944 PL9945 PT9946 RO9947 SI9949 SK9950";
+
+/// The participant IDs of a VAT number: mostly the prefix and number, lower case, under the
 /// country's 99xx code; a few countries use another register's number.
 fn vat_ids(prefix: &str, n: &str) -> Vec<String> {
-    let p = prefix.to_ascii_lowercase();
-    let icd = match prefix {
-        "BE" => return vec![format!("0208:{n}"), format!("9925:be{n}")],
-        "EL" => return vec![format!("9933:el{n}"), format!("9933:gr{n}")],
-        "CHE" => return vec![format!("0183:che{n}"), format!("9927:che{n}")],
-        "IT" => return vec![format!("0211:it{n}")],
-        "DK" => return vec![format!("0184:{n}")],
-        "SE" => return vec![format!("0007:{}", &n[..10])],
-        "FI" => return vec![format!("0216:0037{n}")],
-        "AT" => "9914",
-        "BG" => "9926",
-        "CY" => "9928",
-        "CZ" => "9929",
-        "DE" => "9930",
-        "EE" => "9931",
-        "ES" => "9920",
-        "FR" => "9957",
-        "GB" => "9932",
-        "HR" => "9934",
-        "HU" => "9910",
-        "IE" => "9935",
-        "LT" => "9937",
-        "LU" => "9938",
-        "LV" => "9939",
-        "MT" => "9943",
-        "NL" => "9944",
-        "PL" => "9945",
-        "PT" => "9946",
-        "RO" => "9947",
-        "SI" => "9949",
-        "SK" => "9950",
-        _ => return Vec::new(),
-    };
-    vec![format!("{icd}:{p}{}", n.to_ascii_lowercase())]
+    match prefix {
+        "BE" => vec![format!("0208:{n}"), format!("9925:be{n}")],
+        "EL" => vec![format!("9933:el{n}"), format!("9933:gr{n}")],
+        "CHE" => vec![format!("0183:che{n}"), format!("9927:che{n}")],
+        "IT" => vec![format!("0211:it{n}")],
+        "DK" => vec![format!("0184:{n}")],
+        "SE" => vec![format!("0007:{}", &n[..10])],
+        "FI" => vec![format!("0216:0037{n}")],
+        _ => SCHEMES
+            .split_whitespace()
+            .find_map(|s| s.strip_prefix(prefix))
+            .map(|icd| format!("{icd}:{prefix}{n}").to_ascii_lowercase())
+            .into_iter()
+            .collect(),
+    }
 }
 
 /// The DNS name the SML publishes a participant at: base32 of the SHA-256 of the lower-cased
