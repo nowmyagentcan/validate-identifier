@@ -15,6 +15,51 @@ pub enum Kind {
     Peppol,
 }
 
+const PEPPOL_SCHEME: &str = "iso6523-actorid-upis::";
+
+impl Kind {
+    /// The value as this type's checks read it (spec §2.2).
+    pub fn normalize(self, raw: &str) -> String {
+        match self {
+            Kind::Email | Kind::Phone => clean(raw),
+            Kind::Peppol => {
+                let v = clean(raw);
+                match v.get(..PEPPOL_SCHEME.len()) {
+                    Some(s) if s.eq_ignore_ascii_case(PEPPOL_SCHEME) => v[s.len()..].to_string(),
+                    _ => v,
+                }
+            }
+            Kind::Iban => {
+                let v = compact(raw);
+                let label = v
+                    .strip_prefix("IBAN")
+                    .map(|r| r.strip_prefix(':').unwrap_or(r));
+                label.map_or(v.clone(), str::to_string)
+            }
+            Kind::Vat => {
+                let v = compact(raw);
+                v.strip_prefix("GR")
+                    .map_or(v.clone(), |rest| format!("EL{rest}"))
+            }
+            _ => compact(raw),
+        }
+    }
+}
+
+/// Trimmed, with every Unicode space (NBSP, thin space, …) made a plain space.
+pub fn clean(raw: &str) -> String {
+    let space = |c: char| if c.is_whitespace() { ' ' } else { c };
+    raw.trim().chars().map(space).collect()
+}
+
+/// Upper case, without spaces, dots, dashes or slashes.
+pub fn compact(raw: &str) -> String {
+    raw.chars()
+        .filter(|&c| !c.is_whitespace() && !matches!(c, '.' | '-' | '/'))
+        .flat_map(char::to_uppercase)
+        .collect()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
@@ -204,6 +249,48 @@ pub const DATA: Data = Data {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn values_are_normalised_per_type() {
+        let n = |k: Kind, raw| k.normalize(raw);
+        // NBSP, thin space and narrow NBSP count as spaces; tabs too.
+        assert_eq!(
+            n(
+                Kind::Iban,
+                " de44\u{a0}5001\u{2009}0517\u{202f}5407 3249 31\t"
+            ),
+            "DE44500105175407324931"
+        );
+        assert_eq!(
+            n(Kind::Iban, "IBAN DE44 5001 0517 5407 3249 31"),
+            "DE44500105175407324931"
+        );
+        assert_eq!(n(Kind::Iban, "iban: de44-5001"), "DE445001");
+        assert_eq!(n(Kind::Vat, "de 136.695/976"), "DE136695976");
+        assert_eq!(n(Kind::Vat, "GR 094 543 092"), "EL094543092");
+        assert_eq!(n(Kind::Vat, "CHE-116.281.710 MWST"), "CHE116281710MWST");
+        assert_eq!(n(Kind::Uid, "che-116.281.710"), "CHE116281710");
+        assert_eq!(n(Kind::Abn, "51 824 753 556"), "51824753556");
+        assert_eq!(n(Kind::Lei, "5493001kjtiigc8y1r12"), "5493001KJTIIGC8Y1R12");
+        assert_eq!(n(Kind::Eori, "ie 8256796u"), "IE8256796U");
+        assert_eq!(
+            n(Kind::Phone, "\u{a0}+44 20 7946 0958 "),
+            "+44 20 7946 0958"
+        );
+        assert_eq!(
+            n(Kind::Email, " Jane.Doe@Example.COM\u{2009}"),
+            "Jane.Doe@Example.COM"
+        );
+        // Peppol values keep their case, dashes and dots; only the scheme goes.
+        assert_eq!(
+            n(Kind::Peppol, "ISO6523-ACTORID-UPIS::0208:0202239951"),
+            "0208:0202239951"
+        );
+        assert_eq!(
+            n(Kind::Peppol, " 0204:991-12345.67-AB "),
+            "0204:991-12345.67-AB"
+        );
+    }
 
     #[test]
     fn checks_stop_at_the_first_failure() {
