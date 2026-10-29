@@ -32,7 +32,7 @@ UK VAT and ABN checks need your own credentials (below); none come with this too
 \x1b[1;4mExamples:\x1b[0m
   validate-identifier check DE44500105175407324931
   validate-identifier check \"+44 20 7946 0958\" \"07911 123456\" -r GB
-  validate-identifier check DE136695976 --live
+  validate-identifier check IE6388047V --live
   validate-identifier check CHE-116.281.710 --live
   validate-identifier check 0208:0202239951 --live
   validate-identifier check BE0202239951 -t peppol --live

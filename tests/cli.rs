@@ -311,6 +311,8 @@ fn shows_the_sentence_types_and_examples_in_help() {
             out.contains("\nNothing leaves this computer unless you pass --live.\nUK VAT and ABN checks need your own credentials (below); none come with this tool.\n"),
             "{args:?}"
         );
+        // A number VIES has on record, so the live example shows a registration.
+        assert!(out.contains("\n  validate-identifier check IE6388047V --live\n"));
         assert!(
             out.ends_with("check -f customers.txt --live --json\n"),
             "{args:?}"
