@@ -2109,7 +2109,6 @@ fn vies_answers_that_did_not_succeed_are_never_a_verdict() {
 }
 
 #[test]
-#[ignore = "known bug: F02"]
 fn abn_answers_in_another_shape_are_unavailable() {
     for body in [
         "callback([])",
@@ -2129,7 +2128,6 @@ fn abn_answers_in_another_shape_are_unavailable() {
 }
 
 #[test]
-#[ignore = "known bug: F03"]
 fn gleif_records_without_their_statuses_are_unavailable() {
     let id = lei(1);
     for attributes in [

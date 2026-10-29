@@ -60,18 +60,18 @@ fn answer(r: &Reply) -> Live {
     if field("Message").is_some_and(|m| m.to_ascii_uppercase().contains("GUID")) {
         return not_configured("ABN Lookup didn't recognise ABN_LOOKUP_GUID.");
     }
-    let status = field("AbnStatus").unwrap_or("unknown");
     let now = Live::new(ABN.name, LiveStatus::Active, "");
-    let (status, message) = match (field("Abn"), status) {
-        (None, _) => (LiveStatus::NotFound, "Not found in ABN Lookup.".to_string()),
-        (Some(_), "Active") => (
+    let (status, message) = match (v["Abn"].as_str(), field("AbnStatus")) {
+        (Some(""), _) => (LiveStatus::NotFound, "Not found in ABN Lookup.".to_string()),
+        (Some(_), Some("Active")) => (
             LiveStatus::Active,
             format!("Active in ABN Lookup ({}).", minute(&now.checked_at)),
         ),
-        (Some(_), other) => (
+        (Some(_), Some(other)) => (
             LiveStatus::Inactive,
             format!("ABN Lookup lists this ABN as {other}."),
         ),
+        _ => return unreadable(&ABN, &r.body),
     };
     Live {
         status,

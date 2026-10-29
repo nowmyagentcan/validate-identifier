@@ -64,8 +64,9 @@ fn record(a: Option<&Value>) -> Live {
         return Live::new(GLEIF.name, LiveStatus::NotFound, "Not found in GLEIF.");
     };
     let (e, r) = (&a["entity"], &a["registration"]);
-    let registration = r["status"].as_str().unwrap_or("unknown");
-    let entity = e["status"].as_str().unwrap_or("unknown");
+    let (Some(registration), Some(entity)) = (r["status"].as_str(), e["status"].as_str()) else {
+        return unreadable(&GLEIF, &a.to_string());
+    };
     let now = Live::new(GLEIF.name, LiveStatus::Active, "");
     let (status, message) = if LIVE.contains(&registration) && entity == "ACTIVE" {
         let when = minute(&now.checked_at);
