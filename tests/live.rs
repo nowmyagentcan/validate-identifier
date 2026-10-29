@@ -2162,7 +2162,6 @@ fn a_token_that_cannot_be_sent_is_unavailable() {
 }
 
 #[test]
-#[ignore = "known bug: F05"]
 fn refuses_base_url_overrides_that_are_not_urls() {
     let mock = Mock::start(|_| reply(200, vies_ok("EXAMPLE GMBH")));
     for url in [

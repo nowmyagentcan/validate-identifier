@@ -260,25 +260,28 @@ pub fn encode(s: &str) -> String {
         .collect()
 }
 
-/// `s`'s base URL: its override `url` when set, which must be https://, or http:// to this
-/// computer.
+/// `s`'s base URL: its override `url` when set, which must be an https:// URL, or http:// to
+/// this computer.
 fn base(s: &Source, url: Option<String>) -> Result<String, Error> {
     let Some(url) = url.filter(|v| !v.is_empty()) else {
         return Ok(s.base.into());
     };
     let url = url.trim_end_matches('/');
     let https = url.len() > "https://".len() && url.starts_with("https://");
-    if !https && !local_http(url) {
-        let message = format!(
+    let message = if !https && !local_http(url) {
+        format!(
             "{} must start with https:// (http:// only for 127.0.0.1, [::1] or localhost).",
             s.var
-        );
-        return Err(usage(
-            message,
-            "Fix it, or unset it to use the official address.",
-        ));
-    }
-    Ok(url.into())
+        )
+    } else if url.parse::<ureq::http::Uri>().is_err() {
+        format!("{} isn't a valid URL.", s.var)
+    } else {
+        return Ok(url.into());
+    };
+    Err(usage(
+        message,
+        "Fix it, or unset it to use the official address.",
+    ))
 }
 
 /// Whether `url` is plain http:// to this computer.
@@ -426,6 +429,10 @@ mod tests {
                 e.message
                     .starts_with("VALIDATE_IDENTIFIER_TEST_URL must start with https://")
             );
+        }
+        for bad in ["http://127.0.0.1:1/bad path", "https://exa mple.org"] {
+            let e = with(bad).unwrap_err();
+            assert_eq!(e.message, "VALIDATE_IDENTIFIER_TEST_URL isn't a valid URL.");
         }
         assert_eq!(with("").unwrap(), "https://example.org");
     }
