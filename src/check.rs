@@ -18,6 +18,7 @@ use crate::source::dns::{self, DNS};
 use crate::source::eos::{self, EOS};
 use crate::source::gleif::{self, GLEIF};
 use crate::source::hmrc::{self, HMRC};
+use crate::source::peppol::{self, SML};
 use crate::source::uid::{self, UID};
 use crate::source::vies::{self, VIES};
 
@@ -121,7 +122,7 @@ const fn by(source: &'static Source, batch: usize, ask: Ask) -> Route {
     Route { source, batch, ask }
 }
 
-const ROUTES: [Route; 8] = [
+const ROUTES: [Route; 9] = [
     by(&VIES, 1, vies::ask),
     by(&HMRC, 1, hmrc::ask),
     by(&UID, 1, uid::ask),
@@ -130,6 +131,7 @@ const ROUTES: [Route; 8] = [
     by(&EOS, 10, eos::ask),
     by(&HMRC, 10, hmrc::eori),
     by(&DNS, 1, dns::ask),
+    by(&SML, 1, peppol::ask),
 ];
 
 /// The index in ROUTES of the registry for an item whose format passed (its check digits
@@ -159,6 +161,7 @@ fn route(i: &Item) -> Option<usize> {
         {
             Some(7)
         }
+        (true, Kind::Peppol, _) => Some(8),
         _ => None,
     }
 }

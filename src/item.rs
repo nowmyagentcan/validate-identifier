@@ -261,6 +261,9 @@ pub struct Live {
     /// How often the same request may be sent again: after 2 s, then 4 s.
     #[serde(skip)]
     pub retries: u32,
+    /// Warnings the answer adds to the item.
+    #[serde(skip)]
+    pub warnings: Vec<Warning>,
 }
 
 impl Live {
@@ -283,6 +286,7 @@ impl Live {
             message: message.into(),
             hint: None,
             retries: 0,
+            warnings: Vec::new(),
         }
     }
 }
@@ -342,6 +346,7 @@ impl Item {
             self.status = status;
             self.message.clone_from(&live.message);
         }
+        self.warnings.extend(live.warnings.iter().cloned());
         self.live = Some(live);
     }
 }

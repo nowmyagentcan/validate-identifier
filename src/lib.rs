@@ -13,6 +13,7 @@ pub mod source {
     pub mod eos;
     pub mod gleif;
     pub mod hmrc;
+    pub mod peppol;
     pub mod uid;
     pub mod vies;
 }

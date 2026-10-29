@@ -4,7 +4,7 @@
 mod common;
 
 use common::{Answer, Dns, DnsStub, GUID, HMRC_CREDS, Mock, TOKEN, closed_port, name, reply, vi};
-use hickory_resolver::proto::rr::rdata::{A, MX};
+use hickory_resolver::proto::rr::rdata::{A, MX, NAPTR};
 use hickory_resolver::proto::rr::{RData, RecordType};
 use serde_json::{Value, json};
 
@@ -1634,4 +1634,233 @@ fn takes_only_an_ip_address_for_dns() {
         err,
         "✗ --dns dns.example isn't an IP address.\n  Pass an IP address, with a port if it isn't 53, e.g. 1.1.1.1 or 127.0.0.1:5353.\n"
     );
+}
+
+/// The SML zone the Peppol tests use.
+const ZONE: (&str, &str) = ("VALIDATE_IDENTIFIER_PEPPOL_SML", "sml.test");
+
+/// A NAPTR record pointing at `url` the way the SML writes it.
+fn naptr(order: u16, preference: u16, service: &str, url: &str) -> RData {
+    RData::NAPTR(NAPTR::new(
+        order,
+        preference,
+        b"U".to_vec().into(),
+        service.as_bytes().into(),
+        format!("!.*!{url}!").into_bytes().into(),
+        name("."),
+    ))
+}
+
+/// The SML name of a participant ID in the test zone, lower case as the stub logs it.
+fn sml(id: &str) -> String {
+    validate_identifier::peppol::sml_name(id, ZONE.1).to_ascii_lowercase()
+}
+
+/// An SML that has `registered` IDs at `smp`, says SERVFAIL for `broken` and NXDOMAIN for
+/// the rest.
+fn sml_stub(
+    registered: &'static [&'static str],
+    broken: &'static [&'static str],
+    smp: String,
+) -> DnsStub {
+    DnsStub::start(move |n, t| {
+        // Any zone: the hash label decides.
+        let is = |ids: &[&str]| {
+            ids.iter()
+                .any(|id| n.split('.').next() == sml(id).split('.').next())
+        };
+        match t {
+            RecordType::NAPTR if is(registered) => Dns::Records(vec![
+                naptr(100, 20, "Meta:SMP", "https://backup.example/"),
+                naptr(100, 10, "Meta:SMP", &smp),
+            ]),
+            _ if is(broken) => Dns::ServFail,
+            _ => Dns::NxDomain,
+        }
+    })
+}
+
+#[test]
+fn finds_participants_in_the_sml_under_each_candidate() {
+    let stub = sml_stub(
+        &["9925:be0202239951"],
+        &[],
+        "https://smp.example/peppol/".into(),
+    );
+    let (code, v) = Mock::start(|_| reply(500, "")).json(
+        &[
+            "check",
+            "BE0202239951",
+            "0208:0202239951",
+            "-t",
+            "peppol",
+            "--live",
+            "--dns",
+            &stub.addr,
+        ],
+        &[ZONE],
+    );
+    assert_eq!(code, 1);
+    let asked: Vec<String> = stub.queries().into_iter().map(|(n, _)| n).collect();
+    // BE0202239951 tries both of its IDs; the one given directly is a value of its own.
+    let (be, other) = (sml("0208:0202239951"), sml("9925:be0202239951"));
+    assert_eq!(asked, [be.clone(), other, be]);
+    assert!(
+        asked[0].starts_with("ferpw6ov") && asked[0].ends_with(".iso6523-actorid-upis.sml.test")
+    );
+    let r = first(&v);
+    assert_eq!(
+        (r["status"].as_str(), r["checked"].as_str()),
+        (Some("valid"), Some("live"))
+    );
+    assert!(
+        r["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Registered in Peppol as 9925:be0202239951 (Peppol SML, ")
+    );
+    assert_eq!(r["live"]["source"], "Peppol SML");
+    assert_eq!(
+        r["live"]["data"]["participants"],
+        json!([
+            {"id": "0208:0202239951", "registered": false, "smp": null, "document_types": null},
+            {"id": "9925:be0202239951", "registered": true, "smp": "https://smp.example/peppol/", "document_types": null}
+        ])
+    );
+    // The same ID given directly isn't registered, and no other scheme is suggested.
+    let second = &v["results"][1];
+    assert_eq!(second["status"], "not_found");
+    assert_eq!(
+        second["message"],
+        "Not registered in Peppol under 0208:0202239951."
+    );
+    assert_eq!(second["live"]["code"], "NXDOMAIN");
+    assert_eq!(second["warnings"], json!([]));
+}
+
+#[test]
+fn suggests_other_schemes_when_a_mapped_value_is_not_found() {
+    let stub = sml_stub(&[], &[], String::new());
+    let (code, v) = Mock::start(|_| reply(500, "")).json(
+        &[
+            "check",
+            "BE0202239951",
+            "-t",
+            "peppol",
+            "--live",
+            "--dns",
+            &stub.addr,
+        ],
+        &[ZONE],
+    );
+    assert_eq!(code, 1);
+    let r = first(&v);
+    assert_eq!(r["status"], "not_found");
+    assert_eq!(
+        r["message"],
+        "Not registered in Peppol under 0208:0202239951 or 9925:be0202239951."
+    );
+    assert_eq!(
+        r["warnings"],
+        json!([{"code": "peppol_candidates", "message": "Not found under 0208:0202239951 or 9925:be0202239951; it may be registered under another scheme (e.g. GLN 0088)."}])
+    );
+}
+
+#[test]
+fn a_failed_sml_lookup_is_unavailable_unless_another_candidate_is_registered() {
+    let stub = sml_stub(&[], &["0208:0202239951"], String::new());
+    let (code, out, _) = Mock::start(|_| reply(500, "")).run(
+        &[
+            "check",
+            "BE0202239951",
+            "-t",
+            "peppol",
+            "--live",
+            "--dns",
+            &stub.addr,
+        ],
+        &[ZONE],
+    );
+    assert_eq!(code, 3);
+    assert_eq!(
+        out,
+        "! BE0202239951  Peppol  unavailable · Couldn't look up the Peppol SML: SERVFAIL. This is not a verdict on registration.\n                        Try again, or pass --dns 1.1.1.1 if your network's DNS blocks NAPTR queries.\n"
+    );
+    let (_, v) = Mock::start(|_| reply(500, "")).json(
+        &[
+            "check",
+            "BE0202239951",
+            "-t",
+            "peppol",
+            "--live",
+            "--dns",
+            &stub.addr,
+        ],
+        &[ZONE],
+    );
+    let r = first(&v);
+    assert_eq!(
+        (r["checked"].as_str(), r["live"]["code"].as_str()),
+        (Some("offline"), Some("SERVFAIL"))
+    );
+    assert_eq!(
+        r["live"]["data"]["participants"],
+        json!([{"id": "9925:be0202239951", "registered": false, "smp": null, "document_types": null}])
+    );
+    let stub = sml_stub(
+        &["9925:be0202239951"],
+        &["0208:0202239951"],
+        "https://smp.example/".into(),
+    );
+    let (code, v) = Mock::start(|_| reply(500, "")).json(
+        &[
+            "check",
+            "BE0202239951",
+            "-t",
+            "peppol",
+            "--live",
+            "--dns",
+            &stub.addr,
+        ],
+        &[ZONE],
+    );
+    assert_eq!((code, first(&v)["status"].as_str()), (0, Some("valid")));
+}
+
+#[test]
+fn a_malformed_sml_record_is_unavailable() {
+    for (zone, url) in [
+        (true, "http://smp.example/"),
+        (false, "http://127.0.0.1:1/"),
+        (true, "https://user@smp.example/"),
+        (true, "https://smp.example/?x=1"),
+        (true, "ftp://smp.example/"),
+        (true, ""),
+    ] {
+        let stub = sml_stub(&["0208:0202239951"], &[], url.into());
+        let env: &[(&str, &str)] = if zone { &[ZONE] } else { &[] };
+        let (code, v) = Mock::start(|_| reply(500, "")).json(
+            &["check", "0208:0202239951", "--live", "--dns", &stub.addr],
+            env,
+        );
+        let r = first(&v);
+        assert_eq!(
+            (code, r["status"].as_str()),
+            (3, Some("unavailable")),
+            "{url}"
+        );
+        assert_eq!(
+            r["message"], "The SML record for 0208:0202239951 is malformed.",
+            "{url}"
+        );
+    }
+    // Records without a Meta:SMP service don't count.
+    let stub = DnsStub::start(|_, _| {
+        Dns::Records(vec![naptr(1, 1, "Meta:Other", "https://smp.example/")])
+    });
+    let (code, _) = Mock::start(|_| reply(500, "")).json(
+        &["check", "0208:0202239951", "--live", "--dns", &stub.addr],
+        &[ZONE],
+    );
+    assert_eq!(code, 3);
 }

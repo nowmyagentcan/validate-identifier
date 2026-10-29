@@ -240,17 +240,8 @@ fn base(s: &Source, url: Option<String>) -> Result<String, Error> {
         return Ok(s.base.into());
     };
     let url = url.trim_end_matches('/');
-    let ok = match url.strip_prefix("http://") {
-        Some(rest) => {
-            let host = rest.split('/').next().unwrap_or_default();
-            let port =
-                |(_, p): &(&str, &str)| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit());
-            let host = host.rsplit_once(':').filter(port).map_or(host, |(h, _)| h);
-            ["127.0.0.1", "[::1]", "localhost"].contains(&host)
-        }
-        None => url.len() > "https://".len() && url.starts_with("https://"),
-    };
-    if !ok {
+    let https = url.len() > "https://".len() && url.starts_with("https://");
+    if !https && !local_http(url) {
         let message = format!(
             "{} must start with https:// (http:// only for 127.0.0.1, [::1] or localhost).",
             s.var
@@ -261,6 +252,17 @@ fn base(s: &Source, url: Option<String>) -> Result<String, Error> {
         ));
     }
     Ok(url.into())
+}
+
+/// Whether `url` is plain http:// to this computer.
+pub fn local_http(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let host = rest.split('/').next().unwrap_or_default();
+    let port = |(_, p): &(&str, &str)| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit());
+    let host = host.rsplit_once(':').filter(port).map_or(host, |(h, _)| h);
+    ["127.0.0.1", "[::1]", "localhost"].contains(&host)
 }
 
 /// `unavailable` from `s`, with what to tell people.

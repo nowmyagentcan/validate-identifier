@@ -24,6 +24,7 @@ UK VAT and ABN checks need your own credentials (below); none come with this too
   VALIDATE_IDENTIFIER_HMRC_URL         HMRC base URL (sandbox: https://test-api.service.hmrc.gov.uk)
   VALIDATE_IDENTIFIER_VIES_URL, _EOS_URL, _UID_URL, _ABN_URL, _GLEIF_URL
                                        other base URLs (tests, mirrors)
+  VALIDATE_IDENTIFIER_PEPPOL_SML       Peppol SML zone
   HTTPS_PROXY, NO_PROXY                proxy for HTTPS requests
   NO_COLOR                             no colour
 
@@ -32,7 +33,8 @@ UK VAT and ABN checks need your own credentials (below); none come with this too
   validate-identifier check \"+44 20 7946 0958\" \"07911 123456\" -r GB
   validate-identifier check DE136695976 --live
   validate-identifier check CHE-116.281.710 --live
-  validate-identifier check BE0202239951 -t peppol
+  validate-identifier check 0208:0202239951 --live
+  validate-identifier check BE0202239951 -t peppol --live
   validate-identifier check -f customers.txt --live --json";
 
 const TYPES: [&str; 10] = [

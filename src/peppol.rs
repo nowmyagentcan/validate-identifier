@@ -113,6 +113,27 @@ pub fn sml_name(id: &str, zone: &str) -> String {
     format!("{}.iso6523-actorid-upis.{zone}", base32(hash.as_ref()))
 }
 
+/// A NAPTR record as the SML publishes it: order, preference, flags, services, regexp.
+pub type Naptr<'a> = (u16, u16, &'a [u8], &'a [u8], &'a [u8]);
+
+/// The SMP URL in an SML answer: of the records with flag `U` and service `Meta:SMP`, the one
+/// with the lowest order, then preference; its regexp is `!.*!<url>!` (any delimiter).
+pub fn smp_url(records: &[Naptr]) -> Option<String> {
+    let (.., regexp) = records
+        .iter()
+        .filter(|(_, _, flags, services, _)| {
+            flags.eq_ignore_ascii_case(b"U") && services.eq_ignore_ascii_case(b"Meta:SMP")
+        })
+        .min_by_key(|(order, preference, ..)| (*order, *preference))?;
+    let regexp = std::str::from_utf8(regexp).ok()?;
+    let delimiter = regexp.chars().next()?;
+    let parts: Vec<&str> = regexp[delimiter.len_utf8()..].split(delimiter).collect();
+    match parts[..] {
+        [_, url, _] if !url.is_empty() => Some(url.to_string()),
+        _ => None,
+    }
+}
+
 /// RFC 4648 base32 without padding.
 fn base32(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -237,6 +258,26 @@ mod tests {
         ] {
             assert_eq!(mapped(kind, f).outcome.unwrap_err().code, "peppol_format");
         }
+    }
+
+    #[test]
+    fn the_smp_url_comes_from_the_best_meta_smp_record() {
+        let tickstar = b"!.*!https://smp.tickstar.com/peppol/!";
+        assert_eq!(
+            smp_url(&[(100, 10, b"U", b"Meta:SMP", tickstar)]).as_deref(),
+            Some("https://smp.tickstar.com/peppol/")
+        );
+        let records: [Naptr; 4] = [
+            (100, 20, b"U", b"Meta:SMP", b"!.*!https://second.example/!"),
+            (100, 10, b"u", b"meta:smp", b"#^.*$#https://first.example/#"),
+            (50, 10, b"S", b"Meta:SMP", b"!.*!https://not-u.example/!"),
+            (10, 10, b"U", b"Meta:Other", b"!.*!https://other.example/!"),
+        ];
+        assert_eq!(smp_url(&records).as_deref(), Some("https://first.example/"));
+        for bad in [&b""[..], b"!.*!", b"!.*!!", b"!.*!a!b!", b"https://x/"] {
+            assert_eq!(smp_url(&[(1, 1, b"U", b"Meta:SMP", bad)]), None, "{bad:?}");
+        }
+        assert_eq!(smp_url(&records[2..]), None);
     }
 
     #[test]
