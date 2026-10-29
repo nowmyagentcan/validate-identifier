@@ -348,3 +348,23 @@ fn ends_quietly_when_the_client_leaves_mid_session() {
         assert_eq!(code, Some(0), "{err}");
     }
 }
+
+#[test]
+#[ignore = "known bug: F08"]
+fn refuses_values_outside_the_advertised_lengths() {
+    let long = "A".repeat(257);
+    let calls = [
+        call(2, json!({"values": [""]})),
+        call(3, json!({"values": [long]})),
+    ];
+    let (responses, code) = session(&calls, &[]);
+    assert_eq!(code, 0);
+    for r in &responses[1..] {
+        let result = &r["result"];
+        assert_eq!(result["isError"], true, "{r}");
+        assert!(result.get("structuredContent").is_none(), "{r}");
+        let text = result["content"][0]["text"].as_str().unwrap();
+        let error: Value = serde_json::from_str(text).unwrap();
+        assert!(error["error"]["message"].is_string(), "{r}");
+    }
+}

@@ -883,3 +883,48 @@ fn turns_away_bad_usage_with_exit_2() {
         );
     }
 }
+
+#[test]
+#[ignore = "known bug: F09"]
+fn item_errors_of_a_known_type_keep_every_details_key() {
+    let phone = [
+        "country_code",
+        "e164",
+        "extension",
+        "international",
+        "national",
+        "number_type",
+        "possible",
+        "region",
+    ];
+    let email = ["ascii_domain", "domain", "local", "smtputf8"];
+    for (value, kind, want) in [
+        ("DE1", "vat", &["branch", "number", "prefix"][..]),
+        ("XX123", "vat", &["branch", "number", "prefix"]),
+        ("a@@b", "email", &email),
+        ("+999", "phone", &phone),
+        ("CHE-123", "uid", &["display"]),
+        ("x", "peppol", &["candidates"]),
+        ("XI434031439", "peppol", &["candidates"]),
+    ] {
+        let (_, r) = item(value, &["-t", kind]);
+        let details = r["details"].as_object();
+        let keys: Vec<&String> = details
+            .unwrap_or_else(|| panic!("{value}: {r}"))
+            .keys()
+            .collect();
+        assert_eq!(keys, want, "{value}");
+    }
+}
+
+#[test]
+#[ignore = "known bug: F10"]
+fn accepts_quoted_local_parts_with_angle_brackets() {
+    for value in [r#""a<b"@example.com"#, r#""a>b"@example.com"#] {
+        let (code, r) = item(value, &["-t", "email"]);
+        assert_eq!((code, r["status"].as_str()), (0, Some("valid")), "{r}");
+        assert_eq!(r["warnings"][0]["code"], "quoted_local_part");
+    }
+    let (_, r) = item("Jane <jane@example.com>", &[]);
+    assert_eq!(r["error"]["code"], "email_display_name");
+}

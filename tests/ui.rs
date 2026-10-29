@@ -565,3 +565,15 @@ fn runs_with_stderr_closed() {
         .unwrap();
     assert_eq!(out.status.code(), Some(0));
 }
+
+#[test]
+#[ignore = "known bug: F07"]
+fn copy_guards_spreadsheet_formulas_like_save() {
+    // The clipboard text must pass each cell through the same guard as the CSV.
+    let page = include_str!("../src/ui.html");
+    let copy = page
+        .lines()
+        .find(|l| l.contains("clipboard.writeText"))
+        .unwrap();
+    assert!(copy.contains("cell("), "{copy}");
+}
