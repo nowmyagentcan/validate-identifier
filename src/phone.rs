@@ -12,41 +12,40 @@ const CHECKS: [&str; 3] = ["format", "length", "number"];
 /// Validity comes from `is_valid` and `get_region_code`, never `is_valid_number_for_region`,
 /// which accepts other countries' numbers (rlibphonenumber PR #35).
 pub fn check(v: &str, region: Option<Region>) -> Found {
-    let parse_error = |message: String| Found {
+    let fail = |code, message: &str, hint| Found {
         checks: checks(&CHECKS, Some(0)),
-        ..Found::error(Error::new(
-            "phone_parse",
-            message,
-            Some("Write it in international form, e.g. +44 20 7946 0958."),
-        ))
+        ..Found::error(Error::new(code, message, Some(hint)))
     };
     if !v.starts_with('+') && region.is_none() {
-        return Found {
-            checks: checks(&CHECKS, Some(0)),
-            ..Found::error(Error::new(
-                "phone_region",
-                "A phone number without + needs a region.",
-                Some("Add --region GB, or write it as +44…."),
-            ))
-        };
+        let message = "A phone number without + needs a region.";
+        return fail(
+            "phone_region",
+            message,
+            "Add --region GB, or write it as +44….",
+        );
     }
     let n = match PhoneNumber::parse(v, region) {
         Ok(n) => n,
-        Err(ParseError::InvalidCountryCode) => {
-            let code: String = v.chars().skip(1).take_while(char::is_ascii_digit).collect();
-            return parse_error(match code.as_str() {
-                "" => "This isn't a phone number.".into(),
-                _ => format!(
-                    "+{} isn't a country calling code.",
-                    &code[..code.len().min(3)]
-                ),
-            });
+        Err(e) => {
+            let code: String = v
+                .chars()
+                .skip(1)
+                .take_while(char::is_ascii_digit)
+                .take(3)
+                .collect();
+            let message = match e {
+                ParseError::InvalidCountryCode if !code.is_empty() => {
+                    format!("+{code} isn't a country calling code.")
+                }
+                ParseError::TooShortAfterIdd | ParseError::TooShortNsn => {
+                    "Too short to be a phone number.".into()
+                }
+                ParseError::TooLongNsn => "Too long to be a phone number.".into(),
+                _ => "This isn't a phone number.".into(),
+            };
+            let hint = "Write it in international form, e.g. +44 20 7946 0958.";
+            return fail("phone_parse", &message, hint);
         }
-        Err(ParseError::TooShortAfterIdd | ParseError::TooShortNsn) => {
-            return parse_error("Too short to be a phone number.".into());
-        }
-        Err(ParseError::TooLongNsn) => return parse_error("Too long to be a phone number.".into()),
-        Err(ParseError::NotANumber(_)) => return parse_error("This isn't a phone number.".into()),
     };
 
     let geographic = |r: Region| (r != Region::World).then_some(r.to_string());
