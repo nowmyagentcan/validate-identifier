@@ -929,7 +929,6 @@ fn accepts_quoted_local_parts_with_angle_brackets() {
 }
 
 #[test]
-#[ignore = "known bug: R2-F06"]
 fn refuses_line_breaks_inside_an_email() {
     for value in [
         "\"a\r\nb\"@example.com",

@@ -96,9 +96,16 @@ impl Kind {
     }
 }
 
-/// Trimmed, with every Unicode space (NBSP, thin space, …) made a plain space.
+/// Trimmed, with every Unicode space (NBSP, thin space, …) made a plain space; tabs and line
+/// breaks stay, for the type's checks to refuse.
 pub fn clean(raw: &str) -> String {
-    let space = |c: char| if c.is_whitespace() { ' ' } else { c };
+    let space = |c: char| {
+        if c.is_whitespace() && !c.is_control() {
+            ' '
+        } else {
+            c
+        }
+    };
     raw.trim().chars().map(space).collect()
 }
 
