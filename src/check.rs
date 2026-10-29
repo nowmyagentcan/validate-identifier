@@ -13,6 +13,7 @@ use crate::item::{
 };
 use crate::live::{Client, Source, unavailable};
 use crate::source::abn::{self, ABN};
+use crate::source::eos::{self, EOS};
 use crate::source::gleif::{self, GLEIF};
 use crate::source::hmrc::{self, HMRC};
 use crate::source::uid::{self, UID};
@@ -107,39 +108,28 @@ fn requester(raw: &str) -> Result<(String, String), Error> {
 struct Route {
     source: &'static Source,
     batch: usize,
-    ask: fn(&mut Client, &[&Item]) -> Result<Vec<Live>, Error>,
+    ask: Ask,
 }
 
-const ROUTES: [Route; 5] = [
-    Route {
-        source: &VIES,
-        batch: 1,
-        ask: vies::ask,
-    },
-    Route {
-        source: &HMRC,
-        batch: 1,
-        ask: hmrc::ask,
-    },
-    Route {
-        source: &UID,
-        batch: 1,
-        ask: uid::ask,
-    },
-    Route {
-        source: &ABN,
-        batch: 1,
-        ask: abn::ask,
-    },
-    Route {
-        source: &GLEIF,
-        batch: 100,
-        ask: gleif::ask,
-    },
+type Ask = fn(&mut Client, &[&Item]) -> Result<Vec<Live>, Error>;
+
+const fn by(source: &'static Source, batch: usize, ask: Ask) -> Route {
+    Route { source, batch, ask }
+}
+
+const ROUTES: [Route; 7] = [
+    by(&VIES, 1, vies::ask),
+    by(&HMRC, 1, hmrc::ask),
+    by(&UID, 1, uid::ask),
+    by(&ABN, 1, abn::ask),
+    by(&GLEIF, 100, gleif::ask),
+    by(&EOS, 10, eos::ask),
+    by(&HMRC, 10, hmrc::eori),
 ];
 
-/// The registry for an item whose format passed (its check digits may have failed).
-fn route(i: &Item) -> Option<&'static Route> {
+/// The index in ROUTES of the registry for an item whose format passed (its check digits
+/// may have failed).
+fn route(i: &Item) -> Option<usize> {
     let ok = i
         .error
         .as_ref()
@@ -149,11 +139,13 @@ fn route(i: &Item) -> Option<&'static Route> {
         .is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()));
     match (ok, i.kind?, i.details["prefix"].as_str()) {
         // GB numbers of the GD and HA form have no registry to ask.
-        (true, Kind::Vat, Some("GB")) if digits => Some(&ROUTES[1]),
-        (true, Kind::Vat, Some("CHE")) | (true, Kind::Uid, _) => Some(&ROUTES[2]),
-        (true, Kind::Abn, _) => Some(&ROUTES[3]),
-        (true, Kind::Lei, _) => Some(&ROUTES[4]),
-        (true, Kind::Vat, Some(p)) if p != "GB" => Some(&ROUTES[0]),
+        (true, Kind::Vat, Some("GB")) if digits => Some(1),
+        (true, Kind::Vat, Some("CHE")) | (true, Kind::Uid, _) => Some(2),
+        (true, Kind::Abn, _) => Some(3),
+        (true, Kind::Lei, _) => Some(4),
+        (true, Kind::Vat, Some(p)) if p != "GB" => Some(0),
+        (true, Kind::Eori, _) if i.country.as_deref() == Some("GB") => Some(6),
+        (true, Kind::Eori, _) => Some(5),
         _ => None,
     }
 }
@@ -169,7 +161,7 @@ fn live(
 ) -> Result<(), Error> {
     let mut client = Client::new(&ROUTES.each_ref().map(|r| r.source))?;
     client.requester = requester;
-    let mut lookups: Vec<(&Route, Vec<usize>)> = Vec::new();
+    let mut lookups: Vec<(usize, Vec<usize>)> = Vec::new();
     let mut seen: HashMap<(Option<Kind>, Option<&str>), usize> = HashMap::new();
     for (i, item) in items.iter().enumerate() {
         let Some(r) = route(item) else { continue };
@@ -183,14 +175,15 @@ fn live(
         }
     }
     let (total, mut done) = (lookups.len(), 0);
-    let mut failed: HashMap<String, u32> = HashMap::new();
-    let mut stuck: HashMap<&str, Live> = HashMap::new();
+    // Failures in a row per route, and per VIES country ("" for the whole route).
+    let mut failed: HashMap<(usize, String), u32> = HashMap::new();
+    let mut stuck: HashMap<usize, Live> = HashMap::new();
     let mut answers = Vec::with_capacity(items.len());
-    for r in &ROUTES {
+    for (n, r) in ROUTES.iter().enumerate() {
         let name = r.source.name;
         let mine: Vec<&Vec<usize>> = lookups
             .iter()
-            .filter(|(l, _)| std::ptr::eq(*l, r))
+            .filter(|(l, _)| *l == n)
             .map(|(_, same)| same)
             .collect();
         for chunk in mine.chunks(r.batch) {
@@ -205,20 +198,25 @@ fn live(
             }
             let firsts: Vec<&Item> = chunk.iter().map(|same| &items[same[0]]).collect();
             let country = match name {
-                "VIES" => format!(
-                    "VIES ({})",
-                    firsts[0].details["prefix"].as_str().unwrap_or("")
-                ),
-                _ => name.into(),
+                "VIES" => firsts[0].details["prefix"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
+                _ => String::new(),
             };
-            let tripped = [name.to_string(), country.clone()]
+            let (whole, own) = ((n, String::new()), (n, country));
+            let tripped = [&whole, &own]
                 .into_iter()
-                .find(|k| failed.get(k).is_some_and(|&n| n >= 2));
-            let lives = if let Some(live) = stuck.get(name) {
+                .find(|k| failed.get(*k).is_some_and(|&f| f >= 2));
+            let lives = if let Some(live) = stuck.get(&n) {
                 vec![live.clone(); chunk.len()]
-            } else if let Some(key) = tripped {
+            } else if let Some((_, c)) = tripped {
+                let who = match c.as_str() {
+                    "" => name.to_string(),
+                    c => format!("{name} ({c})"),
+                };
                 let message = format!(
-                    "Skipped: {key} failed twice in a row in this run. This is not a verdict on the number."
+                    "Skipped: {who} failed twice in a row in this run. This is not a verdict on the number."
                 );
                 vec![unavailable(r.source, message); chunk.len()]
             } else {
@@ -230,15 +228,15 @@ fn live(
                     .is_some_and(|c| c.bytes().all(|b| b.is_ascii_uppercase() || b == b'_'));
                 match first.status {
                     LiveStatus::Unavailable => {
-                        let key = if own_code { country } else { name.into() };
+                        let key = if own_code { own } else { whole };
                         *failed.entry(key).or_default() += 1;
                     }
                     LiveStatus::NotConfigured => {
-                        stuck.insert(name, first.clone());
+                        stuck.insert(n, first.clone());
                     }
                     _ => {
-                        failed.remove(name);
-                        failed.remove(&country);
+                        failed.remove(&whole);
+                        failed.remove(&own);
                     }
                 }
                 lives
@@ -254,7 +252,9 @@ fn live(
     for (i, live) in answers {
         let unused = match (&client.requester, live.source) {
             (Some((p, _)), "VIES") if !vies::uses(p) => Some((a(p), "VIES")),
-            (Some((p, _)), "HMRC") if p != "GB" => Some((a(p), "HMRC")),
+            (Some((p, _)), "HMRC") if p != "GB" && items[i].kind == Some(Kind::Vat) => {
+                Some((a(p), "HMRC"))
+            }
             _ => None,
         };
         items[i].answer(live);

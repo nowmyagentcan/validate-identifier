@@ -13,8 +13,9 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 /// The base URL override of every HTTP source.
-pub const SOURCES: [&str; 5] = [
+pub const SOURCES: [&str; 6] = [
     "VALIDATE_IDENTIFIER_VIES_URL",
+    "VALIDATE_IDENTIFIER_EOS_URL",
     "VALIDATE_IDENTIFIER_HMRC_URL",
     "VALIDATE_IDENTIFIER_UID_URL",
     "VALIDATE_IDENTIFIER_ABN_URL",

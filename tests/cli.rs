@@ -308,7 +308,7 @@ fn shows_the_sentence_types_and_examples_in_help() {
             "{args:?}"
         );
         assert!(
-            out.contains("\nNothing leaves this computer unless you pass --live.\n"),
+            out.contains("\nNothing leaves this computer unless you pass --live.\nUK VAT and ABN checks need your own credentials (below); none come with this tool.\n"),
             "{args:?}"
         );
         assert!(

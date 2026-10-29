@@ -59,11 +59,14 @@ pub fn debug(line: impl Into<String>) {
 }
 
 /// An HTTP answer, any status.
+#[derive(Default)]
 pub struct Reply {
     pub status: u16,
     pub body: String,
     /// `Retry-After` in seconds.
     pub retry_after: Option<u64>,
+    /// Where a redirect points.
+    pub location: Option<String>,
 }
 
 pub struct Client {
@@ -147,6 +150,7 @@ impl Client {
                 Ok(Reply {
                     status: r.status().as_u16(),
                     retry_after: header("retry-after").and_then(|v| v.trim().parse().ok()),
+                    location: header("location").map(String::from),
                     body,
                 })
             }
@@ -294,7 +298,13 @@ impl Reply {
                 ..Live::new(s.name, LiveStatus::RateLimited, message)
             };
         }
+        // The European Commission sends visitors to sorry.ec.europa.eu during maintenance.
+        let sorry = self
+            .location
+            .as_deref()
+            .is_some_and(|l| l.contains("//sorry."));
         let what = match self.status {
+            300..=399 if sorry => "is down for maintenance",
             300..=399 => "redirected the request",
             _ => "answered",
         };
@@ -361,8 +371,8 @@ mod tests {
     fn undocumented_statuses_never_become_a_verdict() {
         let reply = |status, retry_after| Reply {
             status,
-            body: String::new(),
             retry_after,
+            ..Reply::default()
         };
         let busy = reply(429, Some(30)).failed(&TEST);
         assert_eq!(busy.status, LiveStatus::RateLimited);

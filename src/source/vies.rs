@@ -125,7 +125,7 @@ mod tests {
                 status: 200,
                 body: json!({"actionSucceed": false, "errorWrappers": [{"error": code}]})
                     .to_string(),
-                retry_after: None,
+                ..Reply::default()
             };
             let live = answer(&r, "DE").unwrap();
             assert_eq!(live.status, LiveStatus::RateLimited, "{code}");
@@ -142,7 +142,7 @@ mod tests {
         let r = Reply {
             status: 200,
             body: r#"{"actionSucceed":false,"errorWrappers":[{"error":"NEW_CODE"}]}"#.into(),
-            retry_after: None,
+            ..Reply::default()
         };
         let live = answer(&r, "DE").unwrap();
         assert_eq!(live.status, LiveStatus::Unavailable);

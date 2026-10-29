@@ -1158,6 +1158,8 @@ fn without_a_network_every_live_check_is_unavailable_and_keeps_its_offline_resul
         "CHE-116.281.710",
         "51824753556",
         &leis,
+        "XI1234567890001",
+        "GB2204302310001",
     ];
     let (code, out, _) = vi(
         &[
@@ -1177,7 +1179,15 @@ fn without_a_network_every_live_check_is_unavailable_and_keeps_its_offline_resul
         .collect();
     assert_eq!(
         sources,
-        ["VIES", "HMRC", "UID register", "ABN Lookup", "GLEIF"]
+        [
+            "VIES",
+            "HMRC",
+            "UID register",
+            "ABN Lookup",
+            "GLEIF",
+            "EOS",
+            "HMRC"
+        ]
     );
     for r in &results[1..] {
         assert_eq!(
@@ -1185,5 +1195,294 @@ fn without_a_network_every_live_check_is_unavailable_and_keeps_its_offline_resul
             (Some("unavailable"), Some(true)),
             "{r}"
         );
+    }
+}
+
+/// An EOS answer with one `result` per EORI the request names: `status(eori)` gives its
+/// status code and extra elements.
+fn eos(status: impl Fn(&str) -> (&'static str, &'static str) + Send + 'static) -> Mock {
+    Mock::start(move |r| {
+        let results: String = r
+            .body
+            .split("<ev:eori>")
+            .skip(1)
+            .map(|e| {
+                let eori = e.split('<').next().unwrap();
+                let (code, extra) = status(eori);
+                format!("<result><eori>{eori}</eori><status>{code}</status><statusDescr>x</statusDescr>{extra}</result>")
+            })
+            .collect();
+        reply(
+            200,
+            format!(
+                r#"<?xml version='1.0' encoding='UTF-8'?><S:Envelope xmlns:S="http://schemas.xmlsoap.org/soap/envelope/"><S:Body><ns0:validateEORIResponse xmlns:ns0="http://eori.ws.eos.dds.s/"><return><requestDate>29/10/2026</requestDate>{results}</return></ns0:validateEORIResponse></S:Body></S:Envelope>"#
+            ),
+        )
+    })
+}
+
+#[test]
+fn asks_eos_in_batches_of_10_with_the_documented_soap_call() {
+    let eoris: Vec<String> = (0..12).map(|n| format!("DE{n:013}")).collect();
+    let mock = eos(|e| match e.ends_with('3') {
+        true => ("1", ""),
+        false => (
+            "0",
+            "<name>EXAMPLE GMBH</name><street>1 Teststr.</street><postalCode>10115</postalCode><city>Berlin</city><country>DE</country>",
+        ),
+    });
+    let args: Vec<&str> = eoris.iter().map(String::as_str).collect();
+    let (code, v) = mock.json(
+        &[&["check", "-t", "eori", "--live"][..], &args].concat(),
+        &[],
+    );
+    assert_eq!(code, 1);
+    let got = mock.requests();
+    assert_eq!(got.len(), 2);
+    assert!(got[1].at - got[0].at >= std::time::Duration::from_millis(990));
+    let req = &got[0];
+    assert_eq!(
+        (req.method.as_str(), req.target.as_str()),
+        (
+            "POST",
+            "/taxation_customs/dds2/eos/validation/services/validation"
+        )
+    );
+    assert_eq!(req.header("soapaction"), Some("\"\""));
+    assert_eq!(req.header("content-type"), Some("text/xml; charset=utf-8"));
+    let list: String = eoris[..10]
+        .iter()
+        .map(|e| format!("<ev:eori>{e}</ev:eori>"))
+        .collect();
+    assert_eq!(
+        req.body,
+        format!(
+            r#"<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ev="http://eori.ws.eos.dds.s/"><soapenv:Body><ev:validateEORI>{list}</ev:validateEORI></soapenv:Body></soapenv:Envelope>"#
+        )
+    );
+    assert!(
+        got[1]
+            .body
+            .contains("<ev:eori>DE0000000000011</ev:eori></ev:validateEORI>")
+    );
+    let r = first(&v);
+    assert_eq!(
+        (r["status"].as_str(), r["checked"].as_str()),
+        (Some("valid"), Some("live"))
+    );
+    assert!(
+        r["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Valid EORI number (EOS, ")
+    );
+    assert_eq!(
+        r["live"]["data"],
+        json!({"name": "EXAMPLE GMBH", "address": "1 Teststr., 10115, Berlin, DE"})
+    );
+    let fourth = &v["results"][3];
+    assert_eq!(fourth["status"], "not_found");
+    assert_eq!(
+        fourth["message"],
+        "EOS has no EORI registration for this number."
+    );
+    assert_eq!(
+        fourth["live"]["data"],
+        json!({"name": null, "address": null})
+    );
+}
+
+#[test]
+fn maps_every_eos_failure_to_unavailable() {
+    let soap = |inner: &str| {
+        format!(
+            r#"<S:Envelope xmlns:S="http://schemas.xmlsoap.org/soap/envelope/"><S:Body>{inner}</S:Body></S:Envelope>"#
+        )
+    };
+    let answer = |body: &str| {
+        format!(
+            r#"<ns0:validateEORIResponse xmlns:ns0="http://eori.ws.eos.dds.s/"><return><requestDate>29/10/2026</requestDate>{body}</return></ns0:validateEORIResponse>"#
+        )
+    };
+    let cases = [
+        (
+            reply(
+                500,
+                soap(
+                    "<S:Fault><faultcode>S:Server</faultcode><faultstring>Internal error</faultstring></S:Fault>",
+                ),
+            ),
+            "EOS answered with an error (Internal error). This is not a verdict on the number.",
+            Some("Internal error"),
+        ),
+        (
+            reply(
+                200,
+                soap(&answer(
+                    "<errorDescription>Service temporarily unavailable</errorDescription>",
+                )),
+            ),
+            "EOS couldn't check these numbers (Service temporarily unavailable). This is not a verdict on the number.",
+            None,
+        ),
+        (
+            reply(
+                200,
+                soap(&answer(
+                    "<result><eori>IE8256796U</eori><status>2</status><statusDescr>Error</statusDescr><errorReason>Backend down</errorReason></result>",
+                )),
+            ),
+            "EOS couldn't check this number (Backend down). This is not a verdict on the number.",
+            None,
+        ),
+        (
+            Answer::Reply(
+                302,
+                vec![("Location", "https://sorry.ec.europa.eu/".into())],
+                String::new(),
+            ),
+            "EOS is down for maintenance (HTTP 302). This is not a verdict on the number.",
+            Some("302"),
+        ),
+        (
+            reply(200, soap(&answer(""))),
+            "EOS sent a response we couldn't read.",
+            None,
+        ),
+    ];
+    for (answer, message, code) in cases {
+        let answer = std::sync::Mutex::new(Some(answer));
+        let mock = Mock::start(move |_| answer.lock().unwrap().take().unwrap_or(reply(500, "")));
+        let (exit, v) = mock.json(&["check", "IE8256796U", "-t", "eori", "--live"], &[]);
+        let r = first(&v);
+        assert_eq!(
+            (exit, r["status"].as_str()),
+            (3, Some("unavailable")),
+            "{message}"
+        );
+        assert_eq!(r["message"], message);
+        assert_eq!(r["live"]["code"].as_str(), code, "{message}");
+        assert_eq!(r["offline"]["valid"], true);
+    }
+}
+
+#[test]
+fn sends_xi_eoris_to_eos_and_gb_eoris_to_hmrc() {
+    let mock = Mock::start(|r| match r.target.as_str() {
+        "/customs/eori/lookup/check-multiple-eori" => {
+            let eoris = r.json()["eoris"].as_array().unwrap().clone();
+            let answers: Vec<Value> = eoris
+                .iter()
+                .map(|e| match e.as_str().unwrap() {
+                    "GB220430231000" => json!({"eori": e, "valid": true, "processingDate": "2026-10-29T14:17:13+00:00",
+                        "companyDetails": {"traderName": "EXAMPLE LTD",
+                            "address": {"streetAndNumber": "1 Test Road", "cityName": "Testville", "postcode": "TE1 1ST"}}}),
+                    other => json!({"eori": e, "valid": other != "GB123456789000", "processingDate": "2026-10-29T14:17:13+00:00"}),
+                })
+                .collect();
+            reply(200, Value::from(answers).to_string())
+        }
+        _ => reply(
+            200,
+            r#"<S:Envelope xmlns:S="http://schemas.xmlsoap.org/soap/envelope/"><S:Body><return><result><eori>XI123456789000</eori><status>0</status></result></return></S:Body></S:Envelope>"#,
+        ),
+    });
+    // No HMRC credentials: the EORI check is open to all, while UK VAT needs them.
+    let (code, v) = mock.json(
+        &[
+            "check",
+            "GB220430231000",
+            "XI123456789000",
+            "GB123456789000",
+            "-t",
+            "eori",
+            "--live",
+        ],
+        &[],
+    );
+    assert_eq!(code, 1);
+    let got = mock.requests();
+    assert_eq!(got.len(), 2);
+    let hmrc = got
+        .iter()
+        .find(|r| r.target.starts_with("/customs"))
+        .unwrap();
+    assert_eq!(hmrc.method, "POST");
+    assert_eq!(hmrc.header("accept"), Some("application/vnd.hmrc.1.0+json"));
+    assert_eq!(hmrc.header("authorization"), None);
+    assert_eq!(
+        hmrc.json(),
+        json!({"eoris": ["GB220430231000", "GB123456789000"]})
+    );
+    let r = &v["results"];
+    assert_eq!(
+        (r[0]["live"]["source"].as_str(), r[0]["status"].as_str()),
+        (Some("HMRC"), Some("valid"))
+    );
+    assert_eq!(
+        r[0]["message"],
+        "Valid EORI number (HMRC, 2026-10-29 14:17 UTC)."
+    );
+    assert_eq!(r[0]["live"]["checked_at"], "2026-10-29T14:17:13Z");
+    assert_eq!(
+        r[0]["live"]["data"],
+        json!({"name": "EXAMPLE LTD", "address": "1 Test Road, Testville, TE1 1ST"})
+    );
+    assert_eq!(
+        (r[1]["live"]["source"].as_str(), r[1]["status"].as_str()),
+        (Some("EOS"), Some("valid"))
+    );
+    assert_eq!(r[2]["status"], "not_found");
+    assert_eq!(
+        r[2]["message"],
+        "HMRC has no EORI registration for this number."
+    );
+    // A UK VAT number without credentials doesn't stop the open EORI check.
+    let (code, v) = mock.json(&["check", "GB434031439", "GB2204302310001", "--live"], &[]);
+    assert_eq!(code, 3);
+    let r = &v["results"];
+    assert_eq!(
+        (
+            r[0]["status"].as_str(),
+            r[1]["type"].as_str(),
+            r[1]["status"].as_str()
+        ),
+        (Some("not_configured"), Some("eori"), Some("valid"))
+    );
+}
+
+#[test]
+fn maps_every_hmrc_eori_failure() {
+    let cases = [
+        (
+            reply(
+                400,
+                json!({"code": "INVALID_REQUEST", "message": "Invalid payload"}).to_string(),
+            ),
+            "unavailable",
+            "HMRC didn't accept the request (Invalid payload). This is not a verdict on the number.",
+            Some("INVALID_REQUEST"),
+        ),
+        (
+            Answer::Reply(429, vec![("Retry-After", "60".into())], String::new()),
+            "rate_limited",
+            "HMRC asked us to slow down (429). Try again in 60 s.",
+            Some("429"),
+        ),
+        (
+            reply(200, "[]"),
+            "unavailable",
+            "HMRC sent a response we couldn't read.",
+            None,
+        ),
+    ];
+    for (answer, status, message, code) in cases {
+        let answer = std::sync::Mutex::new(Some(answer));
+        let mock = Mock::start(move |_| answer.lock().unwrap().take().unwrap_or(reply(503, "")));
+        let (exit, v) = mock.json(&["check", "GB220430231000", "-t", "eori", "--live"], &[]);
+        let r = first(&v);
+        assert_eq!((exit, r["status"].as_str()), (3, Some(status)), "{message}");
+        assert_eq!(r["message"], message);
+        assert_eq!(r["live"]["code"].as_str(), code);
     }
 }

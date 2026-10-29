@@ -16,12 +16,13 @@ static VERSION: LazyLock<String> = LazyLock::new(validate_identifier::version);
 const EXAMPLES: &str =
     "Types: iban, vat (EU, XI, GB, CH), phone, email, lei, abn, uid (Swiss), eori, peppol.
 Nothing leaves this computer unless you pass --live.
+UK VAT and ABN checks need your own credentials (below); none come with this tool.
 
 \x1b[1;4mEnvironment (live checks):\x1b[0m
   HMRC_CLIENT_ID, HMRC_CLIENT_SECRET   UK VAT checks with your own HMRC application
   ABN_LOOKUP_GUID                      ABN checks with your own ABN Lookup GUID
   VALIDATE_IDENTIFIER_HMRC_URL         HMRC base URL (sandbox: https://test-api.service.hmrc.gov.uk)
-  VALIDATE_IDENTIFIER_VIES_URL, _UID_URL, _ABN_URL, _GLEIF_URL
+  VALIDATE_IDENTIFIER_VIES_URL, _EOS_URL, _UID_URL, _ABN_URL, _GLEIF_URL
                                        other base URLs (tests, mirrors)
   HTTPS_PROXY, NO_PROXY                proxy for HTTPS requests
   NO_COLOR                             no colour
