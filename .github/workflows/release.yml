@@ -97,8 +97,12 @@ jobs:
             tar -xzf ../dist/*-${{ matrix.target }}.tar.gz
             if [ "$RUNNER_OS" = Linux ]; then file validate-identifier | grep -E 'static(-pie|ally) linked'; fi
           fi
-          test -s LICENSE && test -s THIRD-PARTY-LICENSES.txt
+          test -s LICENSE
+          for n in 'libphonenumber metadata 9.0.42' 'valvat' 'Additional Notices for Moka' 'Phosphor Icons'; do grep -qF "$n" THIRD-PARTY-LICENSES.txt; done
           ./validate-identifier --version | grep -E '^validate-identifier [0-9.]+ [(]phone data '
+          ./validate-identifier check DE44500105175407324931 --json | grep -F '"status":"valid"'
+          code=0; ./validate-identifier check GB82WEST1234569876543 --json > gb.json || code=$?
+          test $code = 1 && grep -F '"code":"iban_length"' gb.json
       - name: Copy the files with wrong checksums
         run: mkdir bad && cp dist/* bad/ && sed -i.bak 's/^./x/' bad/SHA256SUMS
       # The installers are tested here, on throwaway runners, because they edit the user's PATH.
@@ -133,6 +137,13 @@ jobs:
           }
           # A new shell finds it through the user PATH alone.
           powershell -NoProfile -Command '$env:Path = [Environment]::GetEnvironmentVariable(''Path'', ''User''); validate-identifier --version'
+          # An upgrade works while the page runs, and a later one clears the moved copy.
+          $p = Start-Process "$dir\validate-identifier.exe" 'ui --no-open' -PassThru -WindowStyle Hidden
+          Start-Sleep 1
+          if ($p.HasExited) { throw 'validate-identifier ui stopped' }
+          powershell -NoProfile -File dist/install.ps1
+          if ($LASTEXITCODE) { throw 'upgrade failed while validate-identifier ui ran' }
+          Stop-Process $p.Id; $p.WaitForExit()
           # Other files in the folder stay.
           Set-Content "$dir\notes.old" 'kept'
           powershell -NoProfile -File dist/install.ps1
