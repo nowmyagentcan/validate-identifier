@@ -14,6 +14,7 @@ iban_validation_rs = "=0.1.30"
 idna = "1.1.0"
 jiff = { version = "0.2.38", default-features = false, features = ["std"] }
 ring = { version = "0.17.14", default-features = false }
+roxmltree = "0.21.2"
 rlibphonenumber = { version = "=2.2.15", default-features = false, features = ["global_static", "lite", "protox"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1.0", features = ["derive"] }

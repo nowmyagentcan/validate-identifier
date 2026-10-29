@@ -788,3 +788,136 @@ fn never_prints_hmrc_secrets_or_tokens() {
         }
     }
 }
+
+/// A `GetByUID` answer in the register's shape (eCH-0108): `status` is the UID status code,
+/// `vat` the VAT block's status and entry status codes.
+fn uid_answer(status: &str, vat: Option<(&str, &str)>) -> Answer {
+    let vat = vat.map_or(String::new(), |(s, e)| format!(
+        "<vatRegisterInformation xmlns=\"http://www.ech.ch/xmlns/eCH-0108/5\"><vatStatus>{s}</vatStatus><vatEntryStatus>{e}</vatEntryStatus><vatEntryDate>1995-01-01</vatEntryDate></vatRegisterInformation>"
+    ));
+    reply(
+        200,
+        format!(
+            r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><GetByUIDResponse xmlns="http://www.uid.admin.ch/xmlns/uid-wse"><GetByUIDResult><organisationType><organisation xmlns="http://www.ech.ch/xmlns/eCH-0108/5"><organisationIdentification xmlns="http://www.ech.ch/xmlns/eCH-0098/5"><organisationName xmlns="http://www.ech.ch/xmlns/eCH-0097/5">Beispiel AG</organisationName></organisationIdentification></organisation><uidregInformation xmlns="http://www.ech.ch/xmlns/eCH-0108/5"><uidregStatusEnterpriseDetail>{status}</uidregStatusEnterpriseDetail></uidregInformation>{vat}</organisationType></GetByUIDResult></GetByUIDResponse></s:Body></s:Envelope>"#
+        ),
+    )
+}
+
+fn soap_fault(text: &str) -> Answer {
+    reply(
+        500,
+        format!(
+            r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><s:Fault><faultcode>s:Client</faultcode><faultstring xml:lang="de-CH">{text}</faultstring></s:Fault></s:Body></s:Envelope>"#
+        ),
+    )
+}
+
+#[test]
+fn asks_the_uid_register_with_the_documented_soap_call() {
+    let mock = Mock::start(|_| uid_answer("3", Some(("2", "1"))));
+    let (code, v) = mock.json(
+        &["check", "CHE-116.281.710", "che116281710mwst", "--live"],
+        &[],
+    );
+    assert_eq!(code, 0);
+    let got = mock.requests();
+    assert_eq!(got.len(), 2);
+    assert!(got[1].at - got[0].at >= std::time::Duration::from_millis(3190));
+    let req = &got[0];
+    assert_eq!(
+        (req.method.as_str(), req.target.as_str()),
+        ("POST", "/V5.0/PublicServices.svc")
+    );
+    assert_eq!(req.header("content-type"), Some("text/xml; charset=utf-8"));
+    assert_eq!(
+        req.header("soapaction"),
+        Some("\"http://www.uid.admin.ch/xmlns/uid-wse/IPublicServices/GetByUID\"")
+    );
+    assert_eq!(
+        req.body,
+        r#"<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:uid="http://www.uid.admin.ch/xmlns/uid-wse" xmlns:ech="http://www.ech.ch/xmlns/eCH-0097/5"><soapenv:Body><uid:GetByUID><uid:uid><ech:uidOrganisationIdCategorie>CHE</ech:uidOrganisationIdCategorie><ech:uidOrganisationId>116281710</ech:uidOrganisationId></uid:uid></uid:GetByUID></soapenv:Body></soapenv:Envelope>"#
+    );
+    assert_eq!(
+        first(&v)["live"]["data"],
+        json!({"name": "Beispiel AG", "uid_status": "active", "vat_status": "registered",
+               "vat_active": true, "vat_since": "1995-01-01"})
+    );
+    assert!(
+        first(&v)["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Registered in the UID register (")
+    );
+    assert!(
+        v["results"][1]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Registered for VAT (UID register, ")
+    );
+}
+
+#[test]
+fn maps_every_uid_register_answer() {
+    let empty = || {
+        reply(
+            200,
+            r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><GetByUIDResponse xmlns="http://www.uid.admin.ch/xmlns/uid-wse"><GetByUIDResult/></GetByUIDResponse></s:Body></s:Envelope>"#,
+        )
+    };
+    let uid = "CHE-116.281.710";
+    let vat = "CHE-116.281.710 MWST";
+    let cases: Vec<(&str, Answer, &str, i32)> = vec![
+        (uid, uid_answer("1", None), "valid", 0),
+        (uid, uid_answer("2", None), "valid", 0),
+        (uid, uid_answer("4", None), "valid", 0),
+        (uid, uid_answer("5", None), "inactive", 1),
+        (uid, uid_answer("6", None), "inactive", 1),
+        (uid, uid_answer("7", None), "inactive", 1),
+        (uid, empty(), "not_found", 1),
+        (vat, uid_answer("3", Some(("2", "2"))), "inactive", 1),
+        (vat, uid_answer("3", Some(("3", "1"))), "not_found", 1),
+        (vat, uid_answer("3", None), "not_found", 1),
+        (vat, uid_answer("3", Some(("1", "1"))), "unavailable", 3),
+        (vat, empty(), "not_found", 1),
+        (uid, soap_fault("Data_validation_failed"), "unavailable", 3),
+        (uid, reply(200, "not xml"), "unavailable", 3),
+    ];
+    for (value, answer, status, exit) in cases {
+        let answer = std::sync::Mutex::new(Some(answer));
+        let mock = Mock::start(move |_| answer.lock().unwrap().take().unwrap());
+        let (code, v) = mock.json(&["check", value, "--live"], &[]);
+        assert_eq!(
+            (first(&v)["status"].as_str(), code),
+            (Some(status), exit),
+            "{value} {v}"
+        );
+    }
+    let mock = Mock::start(|_| uid_answer("7", None));
+    let (_, v) = mock.json(&["check", uid, "--live"], &[]);
+    assert_eq!(
+        first(&v)["message"],
+        "This UID is annulled in the UID register."
+    );
+    assert_eq!(first(&v)["live"]["data"]["vat_status"], Value::Null);
+    let mock = Mock::start(|_| soap_fault("Data_validation_failed"));
+    let (_, v) = mock.json(&["check", uid, "--live"], &[]);
+    assert_eq!(first(&v)["live"]["code"], "Data_validation_failed");
+    assert_eq!(mock.requests().len(), 1, "a fault isn't retried");
+}
+
+#[test]
+fn reports_the_uid_register_limit() {
+    let mock = Mock::start(|_| soap_fault("Request_limit_exceeded"));
+    let (code, out, _) = mock.run(&["check", "CHE-116.281.710 MWST", "--live"], &[]);
+    assert_eq!((code, mock.requests().len()), (3, 1));
+    assert_eq!(
+        out,
+        "! CHE-116.281.710 MWST  VAT · CH  rate limited · The UID register limits checks to 20 per minute and asked us to wait. Try again in a minute.\n"
+    );
+    let (_, v) = mock.json(&["check", "CHE-116.281.710", "--live"], &[]);
+    let live = &first(&v)["live"];
+    assert_eq!(
+        (live["code"].as_str(), live["retry_after"].as_u64()),
+        (Some("Request_limit_exceeded"), Some(60))
+    );
+}

@@ -20,7 +20,8 @@ Nothing leaves this computer unless you pass --live.
 \x1b[1;4mEnvironment (live checks):\x1b[0m
   HMRC_CLIENT_ID, HMRC_CLIENT_SECRET   UK VAT checks with your own HMRC application
   VALIDATE_IDENTIFIER_HMRC_URL         HMRC base URL (sandbox: https://test-api.service.hmrc.gov.uk)
-  VALIDATE_IDENTIFIER_VIES_URL         other base URL (tests, mirrors)
+  VALIDATE_IDENTIFIER_VIES_URL, _UID_URL
+                                       other base URLs (tests, mirrors)
   HTTPS_PROXY, NO_PROXY                proxy for HTTPS requests
   NO_COLOR                             no colour
 
@@ -28,6 +29,7 @@ Nothing leaves this computer unless you pass --live.
   validate-identifier check DE44500105175407324931
   validate-identifier check \"+44 20 7946 0958\" \"07911 123456\" -r GB
   validate-identifier check DE136695976 --live
+  validate-identifier check CHE-116.281.710 --live
   validate-identifier check BE0202239951 -t peppol
   validate-identifier check -f customers.txt --live --json";
 
