@@ -885,7 +885,6 @@ fn turns_away_bad_usage_with_exit_2() {
 }
 
 #[test]
-#[ignore = "known bug: F09"]
 fn item_errors_of_a_known_type_keep_every_details_key() {
     let phone = [
         "country_code",

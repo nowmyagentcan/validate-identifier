@@ -72,6 +72,28 @@ impl Kind {
             _ => compact(raw),
         }
     }
+
+    /// The `details` keys every item of this type carries (spec §2.4).
+    fn detail_keys(self) -> &'static [&'static str] {
+        match self {
+            Kind::Iban => &["country", "bban", "bank_id", "branch_id", "print"],
+            Kind::Vat => &["prefix", "number", "branch"],
+            Kind::Phone => &[
+                "e164",
+                "international",
+                "national",
+                "region",
+                "country_code",
+                "number_type",
+                "possible",
+                "extension",
+            ],
+            Kind::Email => &["local", "domain", "ascii_domain", "smtputf8"],
+            Kind::Uid => &["display"],
+            Kind::Peppol => &["candidates"],
+            Kind::Lei | Kind::Abn | Kind::Eori => &[],
+        }
+    }
 }
 
 /// Trimmed, with every Unicode space (NBSP, thin space, …) made a plain space.
@@ -208,11 +230,19 @@ pub struct Item {
 
 impl Item {
     /// The offline verdict: valid when every check passed, else invalid with the first failure.
-    pub fn new(input: &str, kind: Option<Kind>, found: Found) -> Self {
+    /// A known type's `details` keep every key, null when a failed check left it unknown.
+    pub fn new(input: &str, kind: Option<Kind>, mut found: Found) -> Self {
         let (status, message, error) = match found.outcome {
             Ok(message) => (Status::Valid, message, None),
             Err(e) => (Status::Invalid, e.message.clone(), Some(e)),
         };
+        if let Some(kind) = kind {
+            let mut details = found.details.as_object().cloned().unwrap_or_default();
+            for key in kind.detail_keys() {
+                details.entry(*key).or_insert(Value::Null);
+            }
+            found.details = details.into();
+        }
         Item {
             input: input.to_string(),
             kind,
