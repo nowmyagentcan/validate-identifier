@@ -2034,7 +2034,15 @@ fn a_registered_participant_stays_valid_when_its_smp_fails() {
 
 #[test]
 fn never_follows_or_prints_a_password_in_an_smp_redirect() {
-    let to = "https://user:pa55word@127.0.0.1:1/smp/x";
+    for to in [
+        "https://user:pa55word@127.0.0.1:1/smp/x",
+        "//user:pa55word@127.0.0.1:1/smp/x",
+    ] {
+        refuses_smp_redirect(to);
+    }
+}
+
+fn refuses_smp_redirect(to: &'static str) {
     let mock =
         Mock::start(move |_| Answer::Reply(302, vec![("Location", to.into())], String::new()));
     let stub = sml_stub(&["0208:0000000097"], &[], format!("{}/smp/", mock.url));

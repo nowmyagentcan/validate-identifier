@@ -192,13 +192,14 @@ fn service_group(c: &mut Client, smp: &str, id: &str, test: bool) -> Result<Valu
                 });
             }
             300..=399 => {
-                // A path alone stays on the same server.
+                // `//host/x` keeps the scheme (RFC 3986 §5.2); a path alone stays on the same server.
                 let origin: Vec<&str> = url.splitn(4, '/').take(3).collect();
                 let next = reply
                     .location
-                    .map(|l| match l.starts_with('/') {
-                        true => format!("{}{l}", origin.join("/")),
-                        false => l,
+                    .map(|l| match l {
+                        l if l.starts_with("//") => format!("{}{l}", origin[0]),
+                        l if l.starts_with('/') => format!("{}{l}", origin.join("/")),
+                        l => l,
                     })
                     .filter(|l| may_ask(l, test));
                 url = next
