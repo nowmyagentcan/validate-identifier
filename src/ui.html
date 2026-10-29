@@ -157,44 +157,12 @@ const COPY = icon("M216,32H88a8,8,0,0,0-8,8V80H40a8,8,0,0,0-8,8V216a8,8,0,0,0,8,
 const SAVE = icon("M224,144v64a8,8,0,0,1-8,8H40a8,8,0,0,1-8-8V144a8,8,0,0,1,16,0v56H208V144a8,8,0,0,1,16,0Zm-101.66,5.66a8,8,0,0,0,11.32,0l40-40a8,8,0,0,0-11.32-11.32L136,124.69V32a8,8,0,0,0-16,0v92.69L93.66,98.34a8,8,0,0,0-11.32,11.32Z");
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 
-// Sample answers in the shape `validate-identifier ui` returns: the CLI's --json object, or {error}.
-const DATA = { version: "0.1.0", phone_metadata: "9.0.42", iban_registry: "103", peppol_code_list: "9.7" };
-const AT = "2026-10-29T10:12:03Z";
-const pass = (...names) => ({ valid: true, checks: names.map(name => ({ name, pass: true })) });
-const src = (source, status, extra) => ({ source, status, checked_at: AT, code: null, retry_after: null, data: null, ...extra });
-const item = (input, type, value, country, x) => ({ input, type, value, country, status: "valid", checked: "offline", message: "", offline: pass("format", "check_digits"), details: {}, live: null, error: null, warnings: [], ...x });
-const vat = (input, country, source) => item(input, "vat", input, country, { message: `Format and check digits pass. Not checked against ${source}; add --live to confirm registration.`, details: { prefix: country, number: input.slice(2), branch: null } });
-const DOC = "busdox-docid-qns::urn:oasis:names:specification:ubl:schema:xsd:";
-const SAMPLES = {
-  "DE136695976": on => ({ ...vat("DE136695976", "DE", "VIES"), warnings: [{ code: "ambiguous_type", message: "Also a valid eori format; pass --type to check it as one." }],
-    ...on && { checked: "live", message: "Registered for VAT (VIES, 2026-10-29 10:12 UTC).", live: src("VIES", "active", { data: { name: "KRANICH WERKZEUGE GMBH", address: "LINDENSTR. 12, 10969 BERLIN", consultation_number: null } }) } }),
-  "GB123456782": on => ({ ...vat("GB123456782", "GB", "HMRC"),
-    ...on && { status: "not_configured", message: "UK VAT checks need your own HMRC credentials.", live: src("HMRC", "not_configured") } }),
-  "IE6388047V": on => ({ ...vat("IE6388047V", "IE", "VIES"),
-    ...on && { status: "unavailable", message: "VIES didn't answer for IE (MS_UNAVAILABLE). This is not a verdict on the number. Format and check digits: pass. Try again later.", live: src("VIES", "unavailable", { code: "MS_UNAVAILABLE" }) } }),
-  "0208:0202239951": on => item("0208:0202239951", "peppol", "0208:0202239951", null, { offline: pass("format"), message: "Format passes. Not looked up in the Peppol SML; add --live to see if it's registered.", details: { candidates: ["0208:0202239951"] },
-    ...on && { checked: "live", message: "Registered on Peppol.", live: src("Peppol SML", "active", { data: { participants: [{ id: "0208:0202239951", registered: true, smp: "https://smp.example.net/peppol/", document_types: [
-      { id: DOC + "Invoice-2::Invoice##urn:cen.eu:en16931:2017#compliant#urn:fdc:peppol.eu:2017:poacc:billing:3.0::2.1", label: "Invoice · Peppol BIS Billing 3.0" },
-      { id: DOC + "CreditNote-2::CreditNote##urn:cen.eu:en16931:2017#compliant#urn:fdc:peppol.eu:2017:poacc:billing:3.0::2.1", label: "CreditNote · Peppol BIS Billing 3.0" }] }] } }) } }),
-  "+44 20 7946 0958": () => item("+44 20 7946 0958", "phone", "+442079460958", "GB", { offline: pass("number"), message: "Valid fixed line number in GB.",
-    details: { e164: "+442079460958", international: "+44 20 7946 0958", national: "020 7946 0958", region: "GB", country_code: 44, number_type: "fixed_line", possible: true, extension: null } }),
-  "info@example.com": on => item("info@example.com", "email", "info@example.com", null, { offline: pass("syntax", "domain"), message: "Syntax is valid. Mail servers not checked; add --live to look them up.", details: { local: "info", domain: "example.com", ascii_domain: "example.com", smtputf8: false },
-    ...on && { status: "inactive", checked: "live", message: "This domain says it accepts no email.", live: src("DNS", "inactive", { data: { kind: "null_mx", mx: [] } }) } }),
-  "GB82WEST1234569876543": () => item("GB82WEST1234569876543", "iban", "GB82WEST1234569876543", "GB", { status: "invalid", message: "Wrong length for a GB IBAN (21 characters).",
-    offline: { valid: false, checks: [{ name: "country", pass: true }, { name: "length", pass: false }] }, details: { country: "GB", bban: null, bank_id: null, branch_id: null, print: null },
-    error: { code: "iban_length", message: "Wrong length for a GB IBAN (21 characters).", hint: "Check for a missing or extra character." } }),
-};
-const unknown = input => item(input, null, null, null, { status: "invalid", message: "Can't tell what kind of identifier this is.", offline: { valid: false, checks: [] }, details: null,
-  error: { code: "unknown_type", message: "Can't tell what kind of identifier this is.", hint: "Pass --type (iban, vat, phone, email, lei, abn, uid, eori, peppol)." } });
+const EXAMPLES = ["DE136695976", "GB123456782", "IE6388047V", "0208:0202239951", "+44 20 7946 0958", "info@example.com", "GB82WEST1234569876543", "hello"];
 
+// The server answers with the CLI's --json object, or {error} with the status it refused.
 async function api(body) {
-  await new Promise(r => setTimeout(r, body.live ? 900 : 60));
-  if (!body.values.length) return { error: { code: "no_values", message: "No values to check.", hint: "Paste one value per line." } };
-  if (body.live && body.values.length > 100) return { error: { code: "too_many_live", message: "Live checks take at most 100 values at a time.", hint: "Split the list, or turn off Live check." } };
-  const results = body.values.map(v => SAMPLES[v]?.(body.live) ?? unknown(v));
-  const summary = { total: results.length };
-  for (const s of Object.keys(STATUS)) summary[s] = results.filter(r => r.status === s).length;
-  return { results, summary, data: DATA };
+  const r = await fetch("/api", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  return r.json();
 }
 
 const STATUS = { valid: ["Valid", OK, "ok"], invalid: ["Invalid", FAIL, "bad"], inactive: ["Inactive", FAIL, "bad"], not_found: ["Not found", FAIL, "bad"],
@@ -288,7 +256,7 @@ out.addEventListener("click", async ev => {
   const b = ev.target.closest("button");
   if (!b) return;
   if (b.hasAttribute("data-examples")) {
-    values.value = Object.keys(SAMPLES).join("\n") + "\nhello";
+    values.value = EXAMPLES.join("\n");
     form.requestSubmit();
     return;
   }

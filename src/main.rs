@@ -10,7 +10,7 @@ use validate_identifier::check::{self, Options, usage};
 use validate_identifier::interactive::{self, Session};
 use validate_identifier::item::Error;
 use validate_identifier::live;
-use validate_identifier::{mcp, phone, text};
+use validate_identifier::{mcp, phone, text, ui};
 
 static VERSION: LazyLock<String> = LazyLock::new(validate_identifier::version);
 
@@ -66,6 +66,15 @@ enum Command {
        validate-identifier check -f <FILE> [OPTIONS]"
     )]
     Check(CheckArgs),
+    /// Open the local web page
+    Ui {
+        /// Port on 127.0.0.1; 0 picks a free one
+        #[arg(long, value_name = "N", default_value_t = 0)]
+        port: u16,
+        /// Print the address without opening a browser
+        #[arg(long)]
+        no_open: bool,
+    },
     /// Run the MCP server on stdio
     Mcp,
 }
@@ -271,6 +280,7 @@ fn main() -> ExitCode {
     }
     let answer = match Cli::parse().command {
         Command::Check(args) => run(args),
+        Command::Ui { port, no_open } => ui::serve(port, !no_open).map(|()| (String::new(), 0)),
         Command::Mcp => mcp::serve().map(|()| (String::new(), 0)),
     };
     match answer {

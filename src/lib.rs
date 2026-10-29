@@ -20,6 +20,7 @@ pub mod source {
     pub mod vies;
 }
 pub mod text;
+pub mod ui;
 pub mod vat;
 
 pub const PHONE_METADATA: &str = "9.0.42";
