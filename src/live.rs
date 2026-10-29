@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use flate2::read::MultiGzDecoder;
 use hickory_resolver::proto::rr::RecordType;
 use serde_json::Value;
 use ureq::Agent;
@@ -212,7 +213,9 @@ impl Client {
     }
 
     /// `send`, with a failure as the transport's own error.
-    pub fn fetch(&mut self, s: &Source, req: Request<Vec<u8>>) -> Result<Reply, ureq::Error> {
+    pub fn fetch(&mut self, s: &Source, mut req: Request<Vec<u8>>) -> Result<Reply, ureq::Error> {
+        let gzip = ureq::http::HeaderValue::from_static("gzip");
+        req.headers_mut().insert("accept-encoding", gzip);
         let at = {
             let mut last = LAST.lock().unwrap();
             if let Some(at) = last.get(s.name) {
@@ -230,10 +233,23 @@ impl Client {
             req.uri()
         ));
         let answer = self.agent.run(req).and_then(|mut r| {
-            // ureq's limit counts bytes on the wire; the cap holds after gzip too.
             let mut body = Vec::new();
-            let wire = r.body_mut().with_config().limit(LIMIT).reader();
+            // ureq's limit errs when it is reached, so it allows one byte more than the cap.
+            let wire = r.body_mut().with_config().limit(LIMIT + 1).reader();
             wire.take(LIMIT + 1).read_to_end(&mut body)?;
+            // Coding names are case-insensitive (RFC 9110 §8.4.1); ureq would decode only
+            // "gzip". An answer that doesn't decode reaches the source as sent, unreadable.
+            let coding = r.headers().get("content-encoding");
+            let coding = coding.and_then(|v| v.to_str().ok()).unwrap_or_default();
+            if ["gzip", "x-gzip"].contains(&coding.trim().to_ascii_lowercase().as_str()) {
+                let mut decoded = Vec::new();
+                let gz = MultiGzDecoder::new(&body[..])
+                    .take(LIMIT + 1)
+                    .read_to_end(&mut decoded);
+                if gz.is_ok() {
+                    body = decoded;
+                }
+            }
             if body.len() as u64 > LIMIT {
                 return Err(ureq::Error::BodyExceedsLimit(LIMIT));
             }

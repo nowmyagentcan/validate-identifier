@@ -2243,12 +2243,22 @@ fn reads_gzipped_answers() {
     let (code, v) = mock.json(&["check", "DE136695976", "--live"], &[]);
     assert_eq!((code, first(&v)["status"].as_str()), (0, Some("valid")));
     assert_eq!(first(&v)["live"]["data"]["name"], "EXAMPLE GMBH");
+    assert_eq!(mock.requests()[0].header("accept-encoding"), Some("gzip"));
+    let broken = Mock::start(|_| {
+        let gzip = vec![("Content-Encoding", "gzip".into())];
+        Answer::Reply(200, gzip, "not gzip".into())
+    });
+    let (code, v) = broken.json(&["check", "DE136695976", "--live"], &[]);
+    assert_eq!((code, broken.requests().len()), (3, 1));
+    assert_eq!(
+        first(&v)["message"],
+        "VIES sent a response we couldn't read."
+    );
 }
 
 #[test]
-#[ignore = "known bug: R3-F03"]
 fn reads_gzipped_answers_whatever_the_case_of_their_coding() {
-    for coding in ["GZIP", "Gzip"] {
+    for coding in ["GZIP", "Gzip", "x-gzip"] {
         let mock = Mock::start(move |_| Answer::Gzip(coding, vies_ok("EXAMPLE GMBH")));
         let (code, v) = mock.json(&["check", "DE136695976", "--live"], &[]);
         let status = first(&v)["status"].as_str();
@@ -2290,7 +2300,6 @@ fn takes_answers_up_to_one_mib_after_decoding() {
 }
 
 #[test]
-#[ignore = "known bug: R3-F04"]
 fn takes_a_plain_answer_of_exactly_one_mib() {
     assert_eq!(vies_of_size(1 << 20, false), "valid");
 }
