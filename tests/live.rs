@@ -2306,6 +2306,16 @@ fn never_prints_a_secret_sent_back_in_lowercase_percent_encoding() {
 
 #[test]
 #[ignore = "known bug: R3-F01"]
+fn never_prints_part_of_a_secret_cut_off_in_a_debug_line() {
+    let body = "x".repeat(480) + GUID.1;
+    let mock = Mock::start(move |_| reply(200, body.clone()));
+    let (_, _, err) = mock.run(&["check", "51824753556", "--live", "--debug"], &[GUID]);
+    assert!(err.contains("couldn't read"), "{err}");
+    assert!(!err.contains(&GUID.1[..20]), "{err}");
+}
+
+#[test]
+#[ignore = "known bug: R3-F01"]
 fn debug_lines_leave_out_the_password_in_a_base_url() {
     let url = hang_up_port().replace("http://", "https://user:pa55word@");
     let (code, _, err) = vi(
