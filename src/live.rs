@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use hickory_resolver::proto::rr::RecordType;
+use serde_json::Value;
 use ureq::Agent;
 use ureq::http::Request;
 use ureq::tls::{RootCerts, TlsConfig};
@@ -54,14 +55,35 @@ pub fn secret(s: &str) {
     }
 }
 
+/// `text` with every secret replaced by REDACTED.
+fn redact(text: &str) -> String {
+    let mut text = text.to_string();
+    for s in SECRETS.lock().unwrap().iter() {
+        text = text.replace(s.as_str(), "REDACTED");
+    }
+    text
+}
+
+/// `live` with every secret redacted: a registry's answer may echo what it was sent.
+fn scrub(mut live: Live) -> Live {
+    fn strings(v: &mut Value) {
+        match v {
+            Value::String(s) => *s = redact(s),
+            Value::Array(a) => a.iter_mut().for_each(strings),
+            Value::Object(o) => o.values_mut().for_each(strings),
+            _ => {}
+        }
+    }
+    live.code = live.code.as_deref().map(redact);
+    live.message = redact(&live.message);
+    strings(&mut live.data);
+    live
+}
+
 /// A `--debug` line on stderr, secrets redacted; a closed stderr loses it quietly.
 pub fn debug(line: impl Into<String>) {
     if DEBUG.load(Ordering::Relaxed) {
-        let mut line = line.into();
-        for s in SECRETS.lock().unwrap().iter() {
-            line = line.replace(s.as_str(), "REDACTED");
-        }
-        let _ = writeln!(anstream::stderr(), "debug: {line}");
+        let _ = writeln!(anstream::stderr(), "debug: {}", redact(&line.into()));
     }
 }
 
@@ -244,7 +266,7 @@ impl Client {
                 Err(failed) => failed,
             };
             if tries >= live.retries {
-                return Ok(live);
+                return Ok(scrub(live));
             }
             let wait = match live.code.as_deref() {
                 Some("429") => live.retry_after.unwrap_or(2).max(2),

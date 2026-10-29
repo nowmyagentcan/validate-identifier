@@ -2175,7 +2175,6 @@ fn refuses_base_url_overrides_that_are_not_urls() {
 }
 
 #[test]
-#[ignore = "known bug: F06"]
 fn never_prints_a_secret_that_a_registry_sends_back() {
     let secret = HMRC_CREDS[1].1;
     let mock = Mock::start(move |_| reply(401, json!({"error": secret}).to_string()));
