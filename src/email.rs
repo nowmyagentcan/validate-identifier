@@ -40,10 +40,9 @@ fn parse(v: &str) -> Result<Parsed<'_>, (usize, Error)> {
         syntax("email_local", message, None)
     };
     // A quoted local part may hold any character; a display name is outside it.
-    let unquoted = match v.starts_with('"') {
-        true => quoted_end(v).map_or(v, |end| &v[end + 1..]),
-        false => v,
-    };
+    let unquoted = quoted_end(v)
+        .filter(|_| v.starts_with('"'))
+        .map_or(v, |end| &v[end + 1..]);
     if unquoted.contains(['<', '>']) {
         return syntax(
             "email_display_name",
