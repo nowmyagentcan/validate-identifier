@@ -2086,7 +2086,6 @@ fn a_silent_sml_is_unavailable_never_not_registered() {
 }
 
 #[test]
-#[ignore = "known bug: F01"]
 fn vies_answers_that_did_not_succeed_are_never_a_verdict() {
     for body in [
         json!({"valid": false, "actionSucceed": false, "errorWrappers": []}),

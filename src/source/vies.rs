@@ -61,7 +61,7 @@ fn answer(r: &Reply, prefix: &str) -> Result<Live, Error> {
                 let hint = "Pass your own valid VAT number, or leave out --requester.";
                 return Err(usage("VIES rejected your --requester number.", hint));
             }
-            "INVALID_INPUT" => (
+            "INVALID_INPUT" if r.status == 200 => (
                 LiveStatus::NotFound,
                 format!("VIES says this isn't a valid {prefix} VAT number (INVALID_INPUT)."),
             ),
@@ -87,7 +87,8 @@ fn answer(r: &Reply, prefix: &str) -> Result<Live, Error> {
     if r.status != 200 {
         return Ok(r.failed(&VIES));
     }
-    let Some(valid) = v["valid"].as_bool() else {
+    // A verdict needs an answer that says it succeeded.
+    let Some(valid) = v["valid"].as_bool().filter(|_| v["actionSucceed"] != false) else {
         return Ok(unreadable(&VIES, &r.body));
     };
     let checked_at = at(v["requestDate"].as_str());
