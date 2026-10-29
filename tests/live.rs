@@ -2283,7 +2283,6 @@ fn an_hmrc_404_without_its_not_found_code_is_unavailable() {
 }
 
 #[test]
-#[ignore = "known bug: R2-F05"]
 fn reads_a_retry_after_date() {
     let when = jiff::Timestamp::now() + jiff::SignedDuration::from_secs(120);
     let date = when.strftime("%a, %d %b %Y %H:%M:%S GMT").to_string();

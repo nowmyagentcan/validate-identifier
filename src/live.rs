@@ -240,7 +240,7 @@ impl Client {
                 ));
                 Ok(Reply {
                     status: r.status().as_u16(),
-                    retry_after: header("retry-after").and_then(|v| v.trim().parse().ok()),
+                    retry_after: header("retry-after").and_then(retry_after),
                     location: header("location").map(String::from),
                     body,
                 })
@@ -288,6 +288,18 @@ impl Client {
             tries += 1;
         }
     }
+}
+
+/// `Retry-After` in seconds from now: delta-seconds or an HTTP date (RFC 9110 §10.2.3).
+fn retry_after(v: &str) -> Option<u64> {
+    let v = v.trim();
+    v.parse().ok().or_else(|| {
+        let at = jiff::fmt::rfc2822::DateTimeParser::new()
+            .parse_timestamp(v)
+            .ok()?;
+        let wait = jiff::Timestamp::now().duration_until(at).as_secs();
+        Some(u64::try_from(wait).unwrap_or(0))
+    })
 }
 
 /// Percent-encoding for query and form values (RFC 3986 unreserved characters kept).
