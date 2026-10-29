@@ -2229,7 +2229,6 @@ fn holds_the_answer_cap_after_gzip() {
 }
 
 #[test]
-#[ignore = "known bug: R2-F01"]
 fn never_prints_a_secret_from_a_batch_answer_or_in_its_sent_form() {
     let id = lei(1);
     let gleif = json!({"data": [{"attributes": {"lei": id, "entity": {"status": "ACTIVE",

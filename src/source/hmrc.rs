@@ -58,8 +58,6 @@ fn token(c: &mut Client) -> Result<Result<String, Live>, Error> {
             )
         }));
     };
-    live::secret(&id);
-    live::secret(&secret);
     let form = format!(
         "client_id={}&client_secret={}&grant_type=client_credentials&scope=read%3Avat",
         encode(&id),

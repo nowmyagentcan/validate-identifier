@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use ureq::http::Request;
 
 use crate::item::{Error, Item, Live, LiveStatus, minute};
-use crate::live::{self, Client, Reply, Source, encode, unreadable};
+use crate::live::{Client, Reply, Source, encode, unreadable};
 
 pub const ABN: Source = Source {
     name: "ABN Lookup",
@@ -33,7 +33,6 @@ pub fn ask(c: &mut Client, items: &[&Item]) -> Result<Vec<Live>, Error> {
         )]);
     }
     let guid = encode(&guid);
-    live::secret(&guid);
     let abn = items[0].value.as_deref().unwrap_or_default();
     let url = c.url(
         &ABN,

@@ -13,7 +13,7 @@ use crate::detect::{ambiguous, detect, found};
 use crate::item::{
     DATA, Data, Error, Found, Item, Kind, Live, LiveStatus, Summary, Warning, a, clean,
 };
-use crate::live::{Client, Source, unavailable};
+use crate::live::{Client, Source, scrub, unavailable};
 use crate::source::abn::{self, ABN};
 use crate::source::dns::{self, DNS};
 use crate::source::eos::{self, EOS};
@@ -305,7 +305,10 @@ fn live(items: &mut [Item], o: &Options, requester: Option<(String, String)>) ->
                 );
                 vec![unavailable(r.source, message); chunk.len()]
             } else {
-                let lives = (r.ask)(&mut client, &firsts)?;
+                let lives: Vec<Live> = (r.ask)(&mut client, &firsts)?
+                    .into_iter()
+                    .map(scrub)
+                    .collect();
                 let first = &lives[0];
                 let own_code = first
                     .code

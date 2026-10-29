@@ -47,11 +47,13 @@ pub fn set_debug(on: bool) {
     DEBUG.store(on, Ordering::Relaxed);
 }
 
-/// Keeps `s` out of every `--debug` line.
+/// Keeps `s`, as given and as sent in a form or query, out of every `--debug` line and result.
 pub fn secret(s: &str) {
     let mut secrets = SECRETS.lock().unwrap();
-    if !s.is_empty() && !secrets.iter().any(|known| known == s) {
-        secrets.push(s.into());
+    for s in [s.to_string(), encode(s)] {
+        if !s.is_empty() && !secrets.contains(&s) {
+            secrets.push(s);
+        }
     }
 }
 
@@ -65,7 +67,7 @@ fn redact(text: &str) -> String {
 }
 
 /// `live` with every secret redacted: a registry's answer may echo what it was sent.
-fn scrub(mut live: Live) -> Live {
+pub fn scrub(mut live: Live) -> Live {
     fn strings(v: &mut Value) {
         match v {
             Value::String(s) => *s = redact(s),
@@ -116,6 +118,9 @@ pub struct Client {
 impl Client {
     /// A client for `sources`; a bad base URL override is a usage error.
     pub fn new(sources: &[&Source]) -> Result<Self, Error> {
+        for var in ["HMRC_CLIENT_ID", "HMRC_CLIENT_SECRET", "ABN_LOOKUP_GUID"] {
+            secret(&std::env::var(var).unwrap_or_default());
+        }
         let bases = sources
             .iter()
             .filter(|s| !s.var.is_empty())
@@ -272,7 +277,7 @@ impl Client {
                 Err(failed) => failed,
             };
             if tries >= live.retries {
-                return Ok(scrub(live));
+                return Ok(live);
             }
             let wait = match live.code.as_deref() {
                 Some("429") => live.retry_after.unwrap_or(2).max(2),
