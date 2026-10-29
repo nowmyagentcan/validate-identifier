@@ -58,7 +58,7 @@ pub fn usage(message: impl Into<String>, hint: &'static str) -> Error {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
-    /// The identifiers to check, one per item
+    /// The identifiers to check, one per item, each at most 256 bytes as UTF-8
     #[schemars(length(min = 1, max = 1000), inner(length(min = 1, max = 256)))]
     pub values: Vec<String>,
     /// The identifier type; auto detects each value's
@@ -374,7 +374,7 @@ pub fn item(raw: &str, o: &Options) -> Item {
     if raw.len() > MAX_BYTES {
         return fail(
             "too_long",
-            "Value is longer than 256 characters.",
+            "Value is longer than 256 bytes.",
             "Pass one identifier per value.",
         );
     }

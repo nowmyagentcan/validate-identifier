@@ -550,7 +550,7 @@ fn reaches_every_item_error_with_its_message_and_hint() {
     let long = format!("{}@example.com", "a".repeat(65));
     let label = "a".repeat(63);
     let near_limit = format!("j@{label}.{label}.{label}.{}.com", "b".repeat(57));
-    let too_long = "1".repeat(257);
+    let too_long = "é".repeat(129);
     // value, options, code, message, hint
     type Case<'a> = (&'a str, &'a [&'a str], &'a str, &'a str, Option<&'a str>);
     let cases: Vec<Case> = vec![
@@ -565,7 +565,7 @@ fn reaches_every_item_error_with_its_message_and_hint() {
             &too_long,
             &[],
             "too_long",
-            "Value is longer than 256 characters.",
+            "Value is longer than 256 bytes.",
             Some("Pass one identifier per value."),
         ),
         (
