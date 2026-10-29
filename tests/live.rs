@@ -1682,12 +1682,10 @@ fn sml_stub(
 
 #[test]
 fn finds_participants_in_the_sml_under_each_candidate() {
-    let stub = sml_stub(
-        &["9925:be0202239951"],
-        &[],
-        "https://smp.example/peppol/".into(),
-    );
-    let (code, v) = Mock::start(|_| reply(500, "")).json(
+    let mock = Mock::start(|_| reply(404, ""));
+    let smp = format!("{}/smp/", mock.url);
+    let stub = sml_stub(&["9925:be0202239951"], &[], smp.clone());
+    let (code, v) = mock.json(
         &[
             "check",
             "BE0202239951",
@@ -1724,9 +1722,10 @@ fn finds_participants_in_the_sml_under_each_candidate() {
         r["live"]["data"]["participants"],
         json!([
             {"id": "0208:0202239951", "registered": false, "smp": null, "document_types": null},
-            {"id": "9925:be0202239951", "registered": true, "smp": "https://smp.example/peppol/", "document_types": null}
+            {"id": "9925:be0202239951", "registered": true, "smp": smp, "document_types": null}
         ])
     );
+    assert_eq!(r["warnings"][0]["code"], "smp_not_found");
     // The same ID given directly isn't registered, and no other scheme is suggested.
     let second = &v["results"][1];
     assert_eq!(second["status"], "not_found");
@@ -1807,12 +1806,10 @@ fn a_failed_sml_lookup_is_unavailable_unless_another_candidate_is_registered() {
         r["live"]["data"]["participants"],
         json!([{"id": "9925:be0202239951", "registered": false, "smp": null, "document_types": null}])
     );
-    let stub = sml_stub(
-        &["9925:be0202239951"],
-        &["0208:0202239951"],
-        "https://smp.example/".into(),
-    );
-    let (code, v) = Mock::start(|_| reply(500, "")).json(
+    let mock = Mock::start(|_| reply(404, ""));
+    let smp = format!("{}/smp/", mock.url);
+    let stub = sml_stub(&["9925:be0202239951"], &["0208:0202239951"], smp);
+    let (code, v) = mock.json(
         &[
             "check",
             "BE0202239951",
@@ -1863,4 +1860,160 @@ fn a_malformed_sml_record_is_unavailable() {
         &[ZONE],
     );
     assert_eq!(code, 3);
+}
+
+/// A busdox ServiceGroup listing Peppol BIS Billing 3.0 invoices and credit notes.
+fn service_group() -> String {
+    let doc = |root: &str| {
+        format!(
+            "busdox-docid-qns%3A%3Aurn%3Aoasis%3Anames%3Aspecification%3Aubl%3Aschema%3Axsd%3A{root}-2%3A%3A{root}%23%23urn%3Acen.eu%3Aen16931%3A2017%23compliant%23urn%3Afdc%3Apeppol.eu%3A2017%3Apoacc%3Abilling%3A3.0%3A%3A2.1"
+        )
+    };
+    let refs: String = ["Invoice", "CreditNote"]
+        .iter()
+        .map(|root| {
+            format!(r#"<ns2:ServiceMetadataReference href="https://smp.example/iso6523-actorid-upis%3A%3A0208%3A0000000097/services/{}"/>"#, doc(root))
+        })
+        .collect();
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><ns2:ServiceGroup xmlns:ns2="http://busdox.org/serviceMetadata/publishing/1.0/" xmlns:ns3="http://busdox.org/transport/identifiers/1.0/"><ns3:ParticipantIdentifier scheme="iso6523-actorid-upis">0208:0000000097</ns3:ParticipantIdentifier><ns2:ServiceMetadataReferenceCollection>{refs}</ns2:ServiceMetadataReferenceCollection></ns2:ServiceGroup>"#
+    )
+}
+
+const PARTICIPANT: &str = "/smp/iso6523-actorid-upis%3A%3A0208%3A0000000097";
+
+#[test]
+fn lists_the_document_types_a_participant_accepts() {
+    let mock = Mock::start(|r| match r.target.as_str() {
+        PARTICIPANT => reply(200, service_group()),
+        _ => reply(404, ""),
+    });
+    let stub = sml_stub(&["0208:0000000097"], &[], format!("{}/smp/", mock.url));
+    let args = ["check", "0208:0000000097", "--live", "--dns", &stub.addr];
+    let (code, v) = mock.json(&args, &[ZONE]);
+    assert_eq!(code, 0);
+    let got = mock.requests();
+    assert_eq!(got.len(), 1);
+    assert_eq!(
+        (got[0].method.as_str(), got[0].target.as_str()),
+        ("GET", PARTICIPANT)
+    );
+    assert_eq!(got[0].header("accept"), Some("application/xml"));
+    assert_eq!(got[0].header("user-agent"), Some(UA));
+    let billing = "urn:cen.eu:en16931:2017#compliant#urn:fdc:peppol.eu:2017:poacc:billing:3.0::2.1";
+    assert_eq!(
+        first(&v)["live"]["data"]["participants"][0]["document_types"],
+        json!([
+            {"id": format!("busdox-docid-qns::urn:oasis:names:specification:ubl:schema:xsd:Invoice-2::Invoice##{billing}"),
+             "label": "Invoice · Peppol BIS Billing 3.0"},
+            {"id": format!("busdox-docid-qns::urn:oasis:names:specification:ubl:schema:xsd:CreditNote-2::CreditNote##{billing}"),
+             "label": "CreditNote · Peppol BIS Billing 3.0"}
+        ])
+    );
+    let (_, out, _) = mock.run(&args, &[ZONE]);
+    assert!(
+        out.starts_with("✓ 0208:0000000097  Peppol  valid · Peppol SML "),
+        "{out}"
+    );
+    assert!(
+        out.ends_with(" UTC\n                           Invoice · Peppol BIS Billing 3.0\n                           CreditNote · Peppol BIS Billing 3.0\n"),
+        "{out}"
+    );
+}
+
+#[test]
+fn follows_up_to_three_https_redirects_to_the_service_group() {
+    for (n, warning) in [
+        (3, None),
+        (
+            4,
+            Some(
+                "Registered in the Peppol SML, but its SMP didn't answer (more than 3 redirects); document types unknown.",
+            ),
+        ),
+    ] {
+        // Hop k redirects to hop k + 1 until hop n answers.
+        let mock = Mock::start(move |r| {
+            let hop: usize = r.target.rsplit('/').next().unwrap().parse().unwrap_or(0);
+            match hop < n {
+                true => Answer::Reply(
+                    301,
+                    vec![("Location", format!("/smp/{}", hop + 1))],
+                    String::new(),
+                ),
+                false => reply(200, service_group()),
+            }
+        });
+        let stub = sml_stub(&["0208:0000000097"], &[], format!("{}/smp/", mock.url));
+        let (code, v) = mock.json(
+            &["check", "0208:0000000097", "--live", "--dns", &stub.addr],
+            &[ZONE],
+        );
+        let r = first(&v);
+        assert_eq!((code, r["status"].as_str()), (0, Some("valid")), "{n}");
+        let types = &r["live"]["data"]["participants"][0]["document_types"];
+        match warning {
+            None => assert_eq!(types.as_array().unwrap().len(), 2),
+            Some(w) => {
+                assert_eq!(*types, Value::Null);
+                assert_eq!(
+                    r["warnings"],
+                    json!([{"code": "smp_unavailable", "message": w}])
+                );
+            }
+        }
+        assert_eq!(mock.requests().len(), 4.min(n + 1), "{n}");
+    }
+}
+
+#[test]
+fn a_registered_participant_stays_valid_when_its_smp_fails() {
+    let why = |s: &str| {
+        format!(
+            "Registered in the Peppol SML, but its SMP didn't answer ({s}); document types unknown."
+        )
+    };
+    let cases = [
+        (
+            reply(404, ""),
+            "smp_not_found",
+            "Registered in the Peppol SML, but its SMP has no record; document types unknown."
+                .to_string(),
+        ),
+        (reply(503, ""), "smp_unavailable", why("HTTP 503")),
+        (
+            reply(200, "<html>maintenance</html>"),
+            "smp_unavailable",
+            why("an answer that isn't a ServiceGroup"),
+        ),
+        (
+            Answer::Reply(
+                302,
+                vec![("Location", "http://smp.example/".into())],
+                String::new(),
+            ),
+            "smp_unavailable",
+            why("a redirect to a non-https address"),
+        ),
+    ];
+    for (answer, code, message) in cases {
+        let answer = std::sync::Mutex::new(Some(answer));
+        let mock = Mock::start(move |_| answer.lock().unwrap().take().unwrap_or(reply(500, "")));
+        let stub = sml_stub(&["0208:0000000097"], &[], format!("{}/smp/", mock.url));
+        let (exit, v) = mock.json(
+            &["check", "0208:0000000097", "--live", "--dns", &stub.addr],
+            &[ZONE],
+        );
+        let r = first(&v);
+        assert_eq!(
+            (exit, r["status"].as_str()),
+            (0, Some("valid")),
+            "{message}"
+        );
+        assert_eq!(r["warnings"], json!([{"code": code, "message": message}]));
+        assert_eq!(
+            r["live"]["data"]["participants"][0]["document_types"],
+            Value::Null
+        );
+    }
 }

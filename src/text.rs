@@ -84,6 +84,18 @@ fn facts(i: &Item) -> String {
     facts.iter().map(|f| format!(" · {f}")).collect()
 }
 
+/// The labels of the document types a Peppol participant accepts.
+fn document_labels(i: &Item) -> impl Iterator<Item = &str> {
+    let participants = i
+        .live
+        .iter()
+        .filter_map(|l| l.data["participants"].as_array());
+    let types = participants
+        .flatten()
+        .filter_map(|p| p["document_types"].as_array());
+    types.flatten().filter_map(|d| d["label"].as_str())
+}
+
 /// `8 checked: 3 valid, 2 invalid, 1 unavailable`, without the zero counts.
 pub fn summary(s: &Summary) -> String {
     let counts = [
@@ -120,9 +132,17 @@ pub fn report(r: &Report) -> String {
             "{colour}{mark}{RESET} {BOLD}{value:<vw$}{RESET}  {DIM}{label:<tw$}{RESET}  {colour}{word}{RESET}{}",
             facts(i)
         );
+        let indent = vw + tw + 6;
+        let mut documents: Vec<&str> = Vec::new();
+        for label in document_labels(i) {
+            if !documents.contains(&label) {
+                documents.push(label);
+                let _ = writeln!(out, "{:indent$}{label}", "");
+            }
+        }
         let live_hint = i.live.as_ref().and_then(|l| l.hint);
         if let Some(hint) = live_hint.or(i.error.as_ref().and_then(|e| e.hint)) {
-            let _ = writeln!(out, "{:w$}{DIM}{hint}{RESET}", "", w = vw + tw + 6);
+            let _ = writeln!(out, "{:indent$}{DIM}{hint}{RESET}", "");
         }
         for w in &i.warnings {
             let _ = writeln!(out, "  {YELLOW}!{RESET} {}", w.message);

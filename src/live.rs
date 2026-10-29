@@ -145,9 +145,19 @@ impl Client {
         answer
     }
 
-    /// Sends one request once `s`'s gap since its last request start has passed.
+    /// Sends one request once `s`'s gap since its last request start has passed; a failure is
+    /// worded for people.
     #[expect(clippy::result_large_err, reason = "one per paced request")]
     pub fn send(&mut self, s: &Source, req: Request<Vec<u8>>) -> Result<Reply, Live> {
+        let host = req.uri().host().unwrap_or_default().to_string();
+        self.fetch(s, req).map_err(|e| {
+            let proxy = self.agent.config().proxy().map(|p| p.host().to_string());
+            failure(s, &host, proxy.as_deref(), e)
+        })
+    }
+
+    /// `send`, with a failure as the transport's own error.
+    pub fn fetch(&mut self, s: &Source, req: Request<Vec<u8>>) -> Result<Reply, ureq::Error> {
         if let Some(last) = self.last.get(s.name) {
             std::thread::sleep(s.gap.saturating_sub(last.elapsed()));
         }
@@ -160,7 +170,6 @@ impl Client {
             req.method(),
             req.uri()
         ));
-        let host = req.uri().host().unwrap_or_default().to_string();
         let answer = self.agent.run(req).and_then(|mut r| {
             let body = r.body_mut().with_config().limit(LIMIT).read_to_string()?;
             Ok((r, body))
@@ -185,8 +194,7 @@ impl Client {
             }
             Err(e) => {
                 debug(format!("{} failed in {ms} ms: {e}", s.name));
-                let proxy = self.agent.config().proxy().map(|p| p.host().to_string());
-                Err(failure(s, &host, proxy.as_deref(), e))
+                Err(e)
             }
         }
     }

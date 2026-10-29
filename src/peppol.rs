@@ -134,6 +134,60 @@ pub fn smp_url(records: &[Naptr]) -> Option<String> {
     }
 }
 
+const BUSDOX: &str = "http://busdox.org/serviceMetadata/publishing/1.0/";
+
+/// The document types in an SMP's busdox ServiceGroup, as ID and label; `None` when the
+/// answer isn't one.
+pub fn document_types(xml: &str) -> Option<Vec<(String, String)>> {
+    let doc = roxmltree::Document::parse(xml).ok()?;
+    let root = doc.root_element();
+    if !root.has_tag_name((BUSDOX, "ServiceGroup")) {
+        return None;
+    }
+    let hrefs = root
+        .descendants()
+        .filter(|n| n.has_tag_name((BUSDOX, "ServiceMetadataReference")))
+        .filter_map(|n| n.attribute("href"));
+    let ids = hrefs.filter_map(|h| percent_decode(h.rsplit_once("/services/")?.1));
+    Some(ids.map(|id| (id.clone(), label(&id))).collect())
+}
+
+/// A document type for people: its root element and what its customisation is called.
+fn label(id: &str) -> String {
+    let value = id.split_once("::").map_or(id, |(_, v)| v);
+    let (root, custom) = value.split_once("##").unwrap_or((value, ""));
+    let root = root.rsplit("::").next().unwrap_or(root);
+    let custom = custom.rsplit_once("::").map_or(custom, |(c, _)| c);
+    let name = match custom {
+        "" => return root.into(),
+        "urn:cen.eu:en16931:2017#compliant#urn:fdc:peppol.eu:2017:poacc:billing:3.0" => {
+            "Peppol BIS Billing 3.0"
+        }
+        c if c.starts_with("urn:peppol:pint:billing-1") => "Peppol PINT Billing",
+        "urn:fdc:peppol.eu:poacc:trns:mlr:3" => "Message Level Response",
+        "urn:fdc:peppol.eu:poacc:trns:invoice_response:3" => "Invoice Response",
+        "urn:fdc:peppol.eu:poacc:trns:order:3" => "Peppol Order",
+        c => c,
+    };
+    format!("{root} · {name}")
+}
+
+/// `%XX` escapes decoded; `None` when they don't make UTF-8.
+fn percent_decode(s: &str) -> Option<String> {
+    let mut out = Vec::with_capacity(s.len());
+    let mut bytes = s.bytes();
+    while let Some(b) = bytes.next() {
+        out.push(match b {
+            b'%' => {
+                let hex = [bytes.next()?, bytes.next()?];
+                u8::from_str_radix(std::str::from_utf8(&hex).ok()?, 16).ok()?
+            }
+            b => b,
+        });
+    }
+    String::from_utf8(out).ok()
+}
+
 /// RFC 4648 base32 without padding.
 fn base32(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -278,6 +332,81 @@ mod tests {
             assert_eq!(smp_url(&[(1, 1, b"U", b"Meta:SMP", bad)]), None, "{bad:?}");
         }
         assert_eq!(smp_url(&records[2..]), None);
+    }
+
+    #[test]
+    fn service_groups_list_document_types_with_labels() {
+        let doc = |root: &str, custom: &str| {
+            format!(
+                "busdox-docid-qns::urn:oasis:names:specification:ubl:schema:xsd:{root}-2::{root}##{custom}::2.1"
+            )
+        };
+        let billing = "urn:cen.eu:en16931:2017#compliant#urn:fdc:peppol.eu:2017:poacc:billing:3.0";
+        let types = [
+            (doc("Invoice", billing), "Invoice · Peppol BIS Billing 3.0"),
+            (
+                doc("CreditNote", billing),
+                "CreditNote · Peppol BIS Billing 3.0",
+            ),
+            (
+                doc("Invoice", "urn:peppol:pint:billing-1@jp-1"),
+                "Invoice · Peppol PINT Billing",
+            ),
+            (
+                doc("ApplicationResponse", "urn:fdc:peppol.eu:poacc:trns:mlr:3"),
+                "ApplicationResponse · Message Level Response",
+            ),
+            (
+                doc(
+                    "ApplicationResponse",
+                    "urn:fdc:peppol.eu:poacc:trns:invoice_response:3",
+                ),
+                "ApplicationResponse · Invoice Response",
+            ),
+            (
+                doc("Order", "urn:fdc:peppol.eu:poacc:trns:order:3"),
+                "Order · Peppol Order",
+            ),
+            (
+                doc("Catalogue", "urn:example:catalogue:1"),
+                "Catalogue · urn:example:catalogue:1",
+            ),
+            (
+                "peppol-doctype-wildcard::urn:example:Thing".into(),
+                "urn:example:Thing",
+            ),
+        ];
+        let hrefs: String = types
+            .iter()
+            .map(|(id, _)| {
+                let encoded: String = id.bytes().map(|b| match b {
+                    b':' | b'#' | b'@' => format!("%{b:02X}"),
+                    b => char::from(b).to_string(),
+                }).collect();
+                format!(r#"<ns2:ServiceMetadataReference href="https://smp.example/iso6523-actorid-upis%3A%3A0208%3A0000000097/services/{encoded}"/>"#)
+            })
+            .collect();
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><ns2:ServiceGroup xmlns:ns2="http://busdox.org/serviceMetadata/publishing/1.0/" xmlns:ns3="http://busdox.org/transport/identifiers/1.0/"><ns3:ParticipantIdentifier scheme="iso6523-actorid-upis">0208:0000000097</ns3:ParticipantIdentifier><ns2:ServiceMetadataReferenceCollection>{hrefs}</ns2:ServiceMetadataReferenceCollection></ns2:ServiceGroup>"#
+        );
+        let want: Vec<(String, String)> = types
+            .iter()
+            .map(|(id, l)| (id.clone(), l.to_string()))
+            .collect();
+        assert_eq!(document_types(&xml).unwrap(), want);
+        let empty = r#"<ServiceGroup xmlns="http://busdox.org/serviceMetadata/publishing/1.0/"/>"#;
+        assert_eq!(document_types(empty), Some(Vec::new()));
+        for bad in [
+            "",
+            "<ServiceGroup/>",
+            "<html>busy</html>",
+            "<a xmlns=\"http://busdox.org/serviceMetadata/publishing/1.0/\"/>",
+        ] {
+            assert_eq!(document_types(bad), None, "{bad}");
+        }
+        assert_eq!(percent_decode("a%3A%3ab"), Some("a::b".into()));
+        assert_eq!(percent_decode("%zz"), None);
+        assert_eq!(percent_decode("%C3"), None);
     }
 
     #[test]
