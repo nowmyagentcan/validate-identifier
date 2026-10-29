@@ -116,6 +116,12 @@ pub fn checks(names: &[&'static str], failed: Option<usize>) -> Vec<Check> {
         .collect()
 }
 
+/// A country code with its article, as read aloud: "a DE", "an FR".
+pub fn a(code: &str) -> String {
+    let an = code.starts_with(['A', 'E', 'F', 'H', 'I', 'L', 'M', 'N', 'O', 'R', 'S', 'X']);
+    format!("{} {code}", if an { "an" } else { "a" })
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Warning {
     pub code: &'static str,
