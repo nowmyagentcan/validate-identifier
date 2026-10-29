@@ -567,7 +567,6 @@ fn runs_with_stderr_closed() {
 }
 
 #[test]
-#[ignore = "known bug: F07"]
 fn copy_guards_spreadsheet_formulas_like_save() {
     // The clipboard text must pass each cell through the same guard as the CSV.
     let page = include_str!("../src/ui.html");

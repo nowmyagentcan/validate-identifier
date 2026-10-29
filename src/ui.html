@@ -269,7 +269,7 @@ out.addEventListener("click", async ev => {
     return;
   }
   const label = b.lastChild;
-  try { await navigator.clipboard.writeText(table("\t", v => String(v ?? "").replace(/[\t\r\n]+/g, " "))); label.textContent = "Copied"; }
+  try { await navigator.clipboard.writeText(table("\t", v => cell(String(v ?? "").replace(/[\t\r\n]+/g, " ")))); label.textContent = "Copied"; }
   catch { label.textContent = "Can't copy"; }
   setTimeout(() => { label.textContent = "Copy"; }, 1500);
 });
