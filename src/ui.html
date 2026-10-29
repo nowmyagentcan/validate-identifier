@@ -160,8 +160,11 @@ const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "
 const EXAMPLES = ["DE136695976", "GB123456782", "IE6388047V", "0208:0202239951", "+44 20 7946 0958", "info@example.com", "GB82WEST1234569876543", "hello"];
 
 // The server answers with the CLI's --json object, or {error} with the status it refused.
+// A request it would refuse for size isn't sent: the browser would see the cut-off upload as no server.
 async function api(body) {
-  const r = await fetch("/api", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const json = JSON.stringify(body);
+  if (new Blob([json]).size > 512 * 1024) return { error: { message: "The request is larger than 512 KB.", hint: "Split the list and check each part." } };
+  const r = await fetch("/api", { method: "POST", headers: { "content-type": "application/json" }, body: json });
   return r.json();
 }
 

@@ -576,3 +576,12 @@ fn copy_guards_spreadsheet_formulas_like_save() {
         .unwrap();
     assert!(copy.contains("cell("), "{copy}");
 }
+
+#[test]
+fn the_page_keeps_a_request_the_server_would_refuse_for_size() {
+    // The server cuts off a larger upload, which a browser reports as no server at all.
+    let api = &PAGE[PAGE.find("async function api").unwrap()..];
+    let check = api.find(".size > 512 * 1024").expect("no size check");
+    assert!(check < api.find("fetch(").unwrap());
+    assert!(api.contains("The request is larger than 512 KB."));
+}
