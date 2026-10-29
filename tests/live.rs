@@ -2207,3 +2207,97 @@ fn names_the_proxy_it_could_not_reach() {
     assert_eq!(code, 3);
     assert!(out.contains("proxy error at 127.0.0.1"), "{out}");
 }
+
+#[test]
+fn reads_gzipped_answers() {
+    let mock = Mock::start(|_| Answer::Gzip(vies_ok("EXAMPLE GMBH")));
+    let (code, v) = mock.json(&["check", "DE136695976", "--live"], &[]);
+    assert_eq!((code, first(&v)["status"].as_str()), (0, Some("valid")));
+    assert_eq!(first(&v)["live"]["data"]["name"], "EXAMPLE GMBH");
+}
+
+#[test]
+#[ignore = "known bug: R2-F07"]
+fn holds_the_answer_cap_after_gzip() {
+    let mut big: Value = serde_json::from_str(&vies_ok("EXAMPLE GMBH")).unwrap();
+    big["padding"] = "x".repeat(2 << 20).into();
+    let mock = Mock::start(move |_| Answer::Gzip(big.to_string()));
+    let (code, v) = mock.json(&["check", "DE136695976", "--live"], &[]);
+    assert_eq!(
+        (code, first(&v)["message"].as_str()),
+        (3, Some("VIES sent more data than expected."))
+    );
+}
+
+#[test]
+#[ignore = "known bug: R2-F01"]
+fn never_prints_a_secret_from_a_batch_answer_or_in_its_sent_form() {
+    let id = lei(1);
+    let gleif = json!({"data": [{"attributes": {"lei": id, "entity": {"status": "ACTIVE",
+        "legalName": {"name": HMRC_CREDS[1].1}}, "registration": {"status": "ISSUED"}}}]})
+    .to_string();
+    let eori = json!([{"eori": "GB2204302310001", "valid": true,
+        "companyDetails": {"traderName": TOKEN}}])
+    .to_string();
+    let mock = hmrc(move |path| match path {
+        p if p.starts_with("/api/v1/lei-records") => reply(200, gleif.clone()),
+        p if p.starts_with("/customs/eori") => reply(200, eori.clone()),
+        _ => hmrc_ok(),
+    });
+    // `run` fails the test when a secret reaches stdout or stderr.
+    let args = [
+        "check",
+        "GB434031439",
+        &id,
+        "GB2204302310001",
+        "--live",
+        "--json",
+    ];
+    mock.run(&args, &HMRC_CREDS);
+    let echo = Mock::start(|_| reply(401, json!({"error": "s3cret%2Fxyz"}).to_string()));
+    echo.run(&["check", "GB434031439", "--live", "--json"], &HMRC_CREDS);
+}
+
+#[test]
+#[ignore = "known bug: R2-F03"]
+fn gleif_records_without_an_lei_are_unavailable() {
+    let id = lei(1);
+    let mock = Mock::start(|_| reply(200, r#"{"data":[{}]}"#));
+    let (code, v) = mock.json(&["check", &id, "--live"], &[]);
+    assert_eq!(
+        (code, first(&v)["status"].as_str()),
+        (3, Some("unavailable")),
+        "{v}"
+    );
+}
+
+#[test]
+#[ignore = "known bug: R2-F04"]
+fn an_hmrc_404_without_its_not_found_code_is_unavailable() {
+    let gateway = json!({"code": "MATCHING_RESOURCE_NOT_FOUND", "message": "x"}).to_string();
+    for body in [gateway, "<html>Not Found</html>".into()] {
+        let mock = hmrc(move |_| reply(404, body.clone()));
+        let (code, v) = mock.json(&["check", "GB434031439", "--live"], &HMRC_CREDS);
+        assert_eq!(
+            (code, first(&v)["status"].as_str()),
+            (3, Some("unavailable")),
+            "{v}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "known bug: R2-F05"]
+fn reads_a_retry_after_date() {
+    let when = jiff::Timestamp::now() + jiff::SignedDuration::from_secs(120);
+    let date = when.strftime("%a, %d %b %Y %H:%M:%S GMT").to_string();
+    let mock = Mock::start(move |_| {
+        Answer::Reply(429, vec![("Retry-After", date.clone())], String::new())
+    });
+    let (code, v) = mock.json(&["check", "DE136695976", "--live"], &[]);
+    assert_eq!((code, mock.requests().len()), (3, 1));
+    let wait = first(&v)["live"]["retry_after"]
+        .as_u64()
+        .unwrap_or_default();
+    assert!((110..=120).contains(&wait), "{v}");
+}

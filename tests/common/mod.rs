@@ -11,6 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use flate2::Compression;
+use flate2::write::GzEncoder;
 use hickory_resolver::proto::op::{Message, ResponseCode};
 use hickory_resolver::proto::rr::{Name, RData, Record, RecordType};
 use serde_json::Value;
@@ -61,6 +63,8 @@ pub enum Answer {
     Reply(u16, Vec<(&'static str, String)>, String),
     /// A 200 whose body is these bytes, UTF-8 or not.
     Bytes(Vec<u8>),
+    /// A 200 whose body is this text, gzipped.
+    Gzip(String),
     /// Keeps the connection open without answering.
     Hang,
     /// Closes the connection without answering.
@@ -177,6 +181,16 @@ fn serve(
         Answer::Bytes(body) => {
             let head = format!(
                 "HTTP/1.1 200 X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(&[head.as_bytes(), &body].concat());
+        }
+        Answer::Gzip(text) => {
+            let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+            gz.write_all(text.as_bytes())?;
+            let body = gz.finish()?;
+            let head = format!(
+                "HTTP/1.1 200 X\r\nContent-Length: {}\r\nContent-Encoding: gzip\r\nConnection: close\r\n\r\n",
                 body.len()
             );
             let _ = stream.write_all(&[head.as_bytes(), &body].concat());

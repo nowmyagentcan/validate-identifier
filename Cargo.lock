@@ -2268,6 +2268,7 @@ version = "0.1.0"
 dependencies = [
  "anstream",
  "clap",
+ "flate2",
  "hickory-resolver",
  "iban_validation_rs",
  "idna",
