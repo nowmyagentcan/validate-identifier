@@ -9,7 +9,7 @@ use ureq::http::Request;
 
 use crate::check::usage;
 use crate::item::{Error, Item, Live, LiveStatus, at, minute};
-use crate::live::{self, Client, Reply, Source, unavailable, unreadable};
+use crate::live::{self, Client, Reply, Source, encode, unavailable, unreadable};
 
 pub const HMRC: Source = Source {
     name: "HMRC",
@@ -106,18 +106,6 @@ fn rejected(code: Option<&str>) -> Live {
     }
 }
 
-/// Form encoding (RFC 3986 unreserved characters kept).
-fn encode(s: &str) -> String {
-    s.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                char::from(b).to_string()
-            }
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
-}
-
 /// One lookup answer as a live status (spec §3.6).
 fn answer(r: &Reply, with_requester: bool) -> Result<Live, Error> {
     let v: Value = serde_json::from_str(&r.body).unwrap_or_default();
@@ -167,12 +155,4 @@ fn answer(r: &Reply, with_requester: bool) -> Result<Live, Error> {
         code,
         ..Live::new(HMRC.name, status, message)
     })
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn form_values_are_encoded() {
-        assert_eq!(super::encode("a b&c=d+é~"), "a%20b%26c%3Dd%2B%C3%A9~");
-    }
 }

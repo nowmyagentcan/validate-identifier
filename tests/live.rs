@@ -921,3 +921,107 @@ fn reports_the_uid_register_limit() {
         (Some("Request_limit_exceeded"), Some(60))
     );
 }
+
+const GUID: (&str, &str) = ("ABN_LOOKUP_GUID", "f0e1d2c3-b4a5-9687-7869-5a4b3c2d1e0f");
+
+fn abn_answer(abn: &str, status: &str, message: &str) -> Answer {
+    let body = json!({
+        "Abn": abn, "AbnStatus": status, "AbnStatusEffectiveFrom": "2000-03-14", "Acn": "",
+        "AddressDate": "2020-01-01", "AddressPostcode": "2000", "AddressState": "NSW",
+        "BusinessName": [], "EntityName": "EXAMPLE PTY LTD", "EntityTypeCode": "PRV",
+        "EntityTypeName": "Australian Private Company", "Gst": "2000-07-01", "Message": message
+    });
+    reply(200, format!("callback({body})"))
+}
+
+#[test]
+fn asks_abn_lookup_with_the_guid_and_never_shows_it() {
+    let mock = Mock::start(|_| abn_answer("51824753556", "Active", ""));
+    let (code, v) = mock.json(&["check", "51 824 753 556", "--live"], &[GUID]);
+    assert_eq!(code, 0);
+    let req = &mock.requests()[0];
+    assert_eq!(req.method, "GET");
+    assert_eq!(
+        req.target,
+        "/json/AbnDetails.aspx?abn=51824753556&guid=f0e1d2c3-b4a5-9687-7869-5a4b3c2d1e0f"
+    );
+    assert_eq!(req.header("user-agent"), Some(UA));
+    let r = first(&v);
+    assert!(
+        r["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Active in ABN Lookup (")
+    );
+    assert_eq!(
+        r["live"]["data"],
+        json!({"entity_name": "EXAMPLE PTY LTD", "entity_type": "Australian Private Company",
+               "abn_status": "Active", "abn_status_from": "2000-03-14", "gst_from": "2000-07-01",
+               "state": "NSW", "postcode": "2000"})
+    );
+    for args in [&["--json"][..], &[], &["--debug"]] {
+        let (_, out, err) = mock.run(
+            &[&["check", "51824753556", "--live"][..], args].concat(),
+            &[GUID],
+        );
+        assert!(!out.contains(GUID.1) && !err.contains(GUID.1), "{out}{err}");
+        if args == ["--debug"] {
+            assert!(err.contains("&guid=REDACTED "), "{err}");
+        }
+    }
+}
+
+#[test]
+fn maps_every_abn_lookup_answer() {
+    let cases = [
+        (
+            abn_answer("51824753556", "Cancelled", ""),
+            "inactive",
+            "ABN Lookup lists this ABN as Cancelled.",
+        ),
+        (
+            abn_answer("", "", "Search text is not a valid ABN or ACN"),
+            "not_found",
+            "Not found in ABN Lookup.",
+        ),
+        (
+            reply(200, "callback(nonsense"),
+            "unavailable",
+            "ABN Lookup sent a response we couldn't read.",
+        ),
+        (
+            reply(400, ""),
+            "unavailable",
+            "ABN Lookup answered (HTTP 400). This is not a verdict on the number.",
+        ),
+    ];
+    for (answer, status, message) in cases {
+        let answer = std::sync::Mutex::new(Some(answer));
+        let mock = Mock::start(move |_| answer.lock().unwrap().take().unwrap());
+        let (_, v) = mock.json(&["check", "51824753556", "--live"], &[GUID]);
+        assert_eq!(
+            (first(&v)["status"].as_str(), first(&v)["message"].as_str()),
+            (Some(status), Some(message))
+        );
+    }
+    // An unknown GUID is said once; the other ABNs aren't sent.
+    let mock = Mock::start(|_| {
+        abn_answer(
+            "",
+            "",
+            "The GUID entered is not recognised as a Registered Party",
+        )
+    });
+    let (code, out, _) = mock.run(&["check", "51824753556", "53004085616", "--live"], &[GUID]);
+    assert_eq!((code, mock.requests().len()), (3, 1));
+    assert!(out.starts_with(
+        "! 51824753556  ABN · AU  not configured · ABN Lookup didn't recognise ABN_LOOKUP_GUID.\n                         Set ABN_LOOKUP_GUID (free at abr.business.gov.au/Tools/WebServices).\n"
+    ), "{out}");
+    // Without a GUID nothing is sent.
+    let (code, v) = mock.json(&["check", "51824753556", "--live"], &[]);
+    assert_eq!((code, mock.requests().len()), (3, 1));
+    assert_eq!(
+        first(&v)["message"],
+        "ABN checks need your own ABN Lookup GUID."
+    );
+}

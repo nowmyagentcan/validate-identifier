@@ -188,6 +188,18 @@ impl Client {
     }
 }
 
+/// Percent-encoding for query and form values (RFC 3986 unreserved characters kept).
+pub fn encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                char::from(b).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
 /// `s`'s base URL: its override `url` when set, which must be https://, or http:// to this
 /// computer.
 fn base(s: &Source, url: Option<String>) -> Result<String, Error> {
@@ -338,6 +350,11 @@ mod tests {
             );
         }
         assert_eq!(with("").unwrap(), "https://example.org");
+    }
+
+    #[test]
+    fn values_are_percent_encoded() {
+        assert_eq!(encode("a b&c=d+é~"), "a%20b%26c%3Dd%2B%C3%A9~");
     }
 
     #[test]

@@ -19,8 +19,9 @@ Nothing leaves this computer unless you pass --live.
 
 \x1b[1;4mEnvironment (live checks):\x1b[0m
   HMRC_CLIENT_ID, HMRC_CLIENT_SECRET   UK VAT checks with your own HMRC application
+  ABN_LOOKUP_GUID                      ABN checks with your own ABN Lookup GUID
   VALIDATE_IDENTIFIER_HMRC_URL         HMRC base URL (sandbox: https://test-api.service.hmrc.gov.uk)
-  VALIDATE_IDENTIFIER_VIES_URL, _UID_URL
+  VALIDATE_IDENTIFIER_VIES_URL, _UID_URL, _ABN_URL
                                        other base URLs (tests, mirrors)
   HTTPS_PROXY, NO_PROXY                proxy for HTTPS requests
   NO_COLOR                             no colour

@@ -12,6 +12,7 @@ use crate::item::{
     DATA, Data, Error, Found, Item, Kind, Live, LiveStatus, Summary, Warning, a, clean,
 };
 use crate::live::{Client, Source, unavailable};
+use crate::source::abn::{self, ABN};
 use crate::source::hmrc::{self, HMRC};
 use crate::source::uid::{self, UID};
 use crate::source::vies::{self, VIES};
@@ -108,7 +109,7 @@ struct Route {
     ask: fn(&mut Client, &[&Item]) -> Result<Vec<Live>, Error>,
 }
 
-const ROUTES: [Route; 3] = [
+const ROUTES: [Route; 4] = [
     Route {
         source: &VIES,
         batch: 1,
@@ -123,6 +124,11 @@ const ROUTES: [Route; 3] = [
         source: &UID,
         batch: 1,
         ask: uid::ask,
+    },
+    Route {
+        source: &ABN,
+        batch: 1,
+        ask: abn::ask,
     },
 ];
 
@@ -139,6 +145,7 @@ fn route(i: &Item) -> Option<&'static Route> {
         // GB numbers of the GD and HA form have no registry to ask.
         (true, Kind::Vat, Some("GB")) if digits => Some(&ROUTES[1]),
         (true, Kind::Vat, Some("CHE")) | (true, Kind::Uid, _) => Some(&ROUTES[2]),
+        (true, Kind::Abn, _) => Some(&ROUTES[3]),
         (true, Kind::Vat, Some(p)) if p != "GB" && p != "CHE" => Some(&ROUTES[0]),
         _ => None,
     }
