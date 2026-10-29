@@ -7,7 +7,8 @@ use std::time::Instant;
 
 use clap::{Parser, Subcommand};
 use validate_identifier::check::{self, Options, usage};
-use validate_identifier::item::{Error, Kind};
+use validate_identifier::interactive::{self, Session};
+use validate_identifier::item::Error;
 use validate_identifier::live;
 use validate_identifier::{phone, text};
 
@@ -169,7 +170,7 @@ fn run(command: Command) -> Result<(String, u8), Error> {
         None => values,
     };
     let o = Options {
-        kind: Kind::ALL.into_iter().find(|k| k.name() == kind),
+        kind: check::kind(&kind)?,
         region: region.as_deref().map(phone::region).transpose()?,
         live,
         progress: live && !json && io::stderr().is_terminal(),
@@ -229,14 +230,41 @@ fn fail(e: &Error) {
     );
 }
 
-fn main() -> ExitCode {
-    let answer = if std::env::args_os().len() == 1 {
+/// The banner and a prompt on a terminal; with no terminal to ask on, a usage error.
+fn interactive() -> ExitCode {
+    if !(io::stdin().is_terminal() && io::stdout().is_terminal()) {
         let hint = "Try: validate-identifier check DE44500105175407324931";
-        Err(usage("No command given.", hint))
-    } else {
-        run(Cli::parse().command)
+        fail(&usage("No command given.", hint));
+        return ExitCode::from(2);
+    }
+    let session = Session {
+        progress: io::stderr().is_terminal(),
+        ..Session::default()
     };
-    match answer {
+    let blocks = interactive::blocks(io::stdin());
+    match interactive::run(
+        blocks,
+        &mut anstream::stdout(),
+        session,
+        text::unicode(true),
+    ) {
+        Err(e) if e.kind() != ErrorKind::BrokenPipe => {
+            fail(&Error::new(
+                "io",
+                format!("Couldn't write output: {e}."),
+                None,
+            ));
+            ExitCode::from(3)
+        }
+        _ => ExitCode::SUCCESS,
+    }
+}
+
+fn main() -> ExitCode {
+    if std::env::args_os().len() == 1 {
+        return interactive();
+    }
+    match run(Cli::parse().command) {
         Ok((out, code)) => emit(&out, code),
         Err(e) => {
             fail(&e);

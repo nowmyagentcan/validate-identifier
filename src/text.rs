@@ -9,12 +9,12 @@ use crate::item::{Error, Item, Kind, Status, Summary, minute};
 /// What the tool is for, in one sentence: the help's first line.
 pub const SENTENCE: &str = "Check VAT numbers, IBANs, phone numbers, emails, LEIs and Peppol IDs.";
 
-const BOLD: &str = "\x1b[1m";
-const DIM: &str = "\x1b[2m";
+pub const BOLD: &str = "\x1b[1m";
+pub const DIM: &str = "\x1b[2m";
 const RED: &str = "\x1b[31m";
 const GREEN: &str = "\x1b[32m";
 const YELLOW: &str = "\x1b[33m";
-const RESET: &str = "\x1b[0m";
+pub const RESET: &str = "\x1b[0m";
 
 /// Shown values longer than this push their own line instead of padding every other.
 const PAD_LIMIT: usize = 34;
@@ -23,9 +23,9 @@ fn shown(i: &Item) -> &str {
     i.value.as_deref().unwrap_or(&i.input)
 }
 
-/// `IBAN · DE`, `Swiss UID · CH`, `Peppol`, `Unknown`.
-fn label(i: &Item) -> String {
-    let name = match i.kind {
+/// `IBAN`, `Swiss UID`, `Unknown`.
+pub fn type_name(kind: Option<Kind>) -> &'static str {
+    match kind {
         Some(Kind::Iban) => "IBAN",
         Some(Kind::Vat) => "VAT",
         Some(Kind::Phone) => "Phone",
@@ -36,7 +36,12 @@ fn label(i: &Item) -> String {
         Some(Kind::Eori) => "EORI",
         Some(Kind::Peppol) => "Peppol",
         None => "Unknown",
-    };
+    }
+}
+
+/// `IBAN · DE`, `Swiss UID · CH`, `Peppol`, `Unknown`.
+fn label(i: &Item) -> String {
+    let name = type_name(i.kind);
     match &i.country {
         Some(c) => format!("{name} · {c}"),
         None => name.into(),
@@ -165,7 +170,12 @@ pub fn error(e: &Error) -> String {
 
 /// The text with ASCII in place of the symbols a legacy Windows console can't show.
 pub fn ascii(text: &str) -> String {
-    text.replace('✓', "+")
+    text.replace(['╭', '╮', '╰', '╯'], "+")
+        .replace('─', "-")
+        .replace('│', "|")
+        .replace('✻', "*")
+        .replace('›', ">")
+        .replace('✓', "+")
         .replace('✗', "x")
         .replace('·', "-")
         .replace('…', "...")
@@ -213,5 +223,6 @@ mod tests {
     #[test]
     fn ascii_replaces_every_symbol() {
         assert_eq!(ascii("✓ a · b ✗ c … ! d"), "+ a - b x c ... ! d");
+        assert_eq!(ascii("╭─╮│✻ x ›│╰─╯"), "+-+|* x >|+-+");
     }
 }

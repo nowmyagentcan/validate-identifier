@@ -52,6 +52,20 @@ pub fn usage(message: impl Into<String>, hint: &'static str) -> Error {
     Error::new("usage", message, Some(hint))
 }
 
+/// The type named `name`, `None` for auto.
+pub fn kind(name: &str) -> Result<Option<Kind>, Error> {
+    if name == "auto" {
+        return Ok(None);
+    }
+    match Kind::ALL.into_iter().find(|k| k.name() == name) {
+        Some(k) => Ok(Some(k)),
+        None => Err(usage(
+            format!("Unknown type '{name}'."),
+            "Use one of: auto, iban, vat, phone, email, lei, abn, uid, eori, peppol.",
+        )),
+    }
+}
+
 /// Every value's item, in input order; a repeated value is checked once.
 pub fn run(values: &[String], o: &Options) -> Result<Report, Error> {
     if values.is_empty() {
