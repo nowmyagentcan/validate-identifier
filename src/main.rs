@@ -71,6 +71,9 @@ enum Command {
         /// Ask the official registries over the network
         #[arg(short, long)]
         live: bool,
+        /// Your own VAT number, for a VIES or HMRC consultation number
+        #[arg(long, value_name = "VAT")]
+        requester: Option<String>,
         /// Region for phone numbers without +
         #[arg(short, long, value_name = "CC")]
         region: Option<String>,
@@ -132,6 +135,7 @@ fn run(command: Command) -> Result<(String, u8), Error> {
         values,
         kind,
         live,
+        requester,
         region,
         file,
         json,
@@ -157,6 +161,7 @@ fn run(command: Command) -> Result<(String, u8), Error> {
         region: region.as_deref().map(phone::region).transpose()?,
         live,
         progress: live && !json && io::stderr().is_terminal(),
+        requester,
     };
     let start = Instant::now();
     let report = check::run(&values, &o)?;

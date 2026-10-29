@@ -6,6 +6,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use ureq::http::Request;
 
+use crate::check::usage;
 use crate::item::{Error, Item, Live, LiveStatus, at, minute};
 use crate::live::{Client, Reply, Source, unreadable};
 
@@ -30,7 +31,12 @@ const BUSY: [&str; 5] = [
 pub fn ask(c: &mut Client, items: &[&Item]) -> Result<Vec<Live>, Error> {
     let d = &items[0].details;
     let prefix = d["prefix"].as_str().unwrap_or_default();
-    let body = json!({"countryCode": prefix, "vatNumber": d["number"]}).to_string();
+    let mut body = json!({"countryCode": prefix, "vatNumber": d["number"]});
+    if let Some((p, n)) = c.requester.as_ref().filter(|(p, _)| uses(p)) {
+        body["requesterMemberStateCode"] = p.as_str().into();
+        body["requesterNumber"] = n.as_str().into();
+    }
+    let body = body.to_string();
     let url = c.url(&VIES, PATH);
     let req = || {
         Request::post(&url)
@@ -39,14 +45,23 @@ pub fn ask(c: &mut Client, items: &[&Item]) -> Result<Vec<Live>, Error> {
             .body(body.clone().into_bytes())
             .expect("a valid request")
     };
-    Ok(vec![c.ask(&VIES, req, |r| Ok(answer(r, prefix)))?])
+    Ok(vec![c.ask(&VIES, req, |r| answer(r, prefix))?])
+}
+
+/// Whether VIES takes a requester with this prefix: EU and XI numbers.
+pub fn uses(requester_prefix: &str) -> bool {
+    !matches!(requester_prefix, "GB" | "CHE")
 }
 
 /// One answer as a live status (spec §3.6).
-fn answer(r: &Reply, prefix: &str) -> Live {
+fn answer(r: &Reply, prefix: &str) -> Result<Live, Error> {
     let v: Value = serde_json::from_str(&r.body).unwrap_or_default();
     if let Some(code) = v["errorWrappers"][0]["error"].as_str() {
         let (status, message) = match code {
+            "INVALID_REQUESTER_INFO" => {
+                let hint = "Pass your own valid VAT number, or leave out --requester.";
+                return Err(usage("VIES rejected your --requester number.", hint));
+            }
             "INVALID_INPUT" => (
                 LiveStatus::NotFound,
                 format!("VIES says this isn't a valid {prefix} VAT number (INVALID_INPUT)."),
@@ -63,18 +78,18 @@ fn answer(r: &Reply, prefix: &str) -> Live {
             ),
         };
         let busy = status == LiveStatus::RateLimited;
-        return Live {
+        return Ok(Live {
             code: Some(code.into()),
             retry_after: busy.then_some(60),
             retries: if busy { 2 } else { 0 },
             ..Live::new(VIES.name, status, message)
-        };
+        });
     }
     if r.status != 200 {
-        return r.failed(&VIES);
+        return Ok(r.failed(&VIES));
     }
     let Some(valid) = v["valid"].as_bool() else {
-        return unreadable(&VIES, &r.body);
+        return Ok(unreadable(&VIES, &r.body));
     };
     let checked_at = at(v["requestDate"].as_str());
     let field = |k: &str| v[k].as_str().filter(|s| !s.is_empty() && *s != "---");
@@ -88,7 +103,7 @@ fn answer(r: &Reply, prefix: &str) -> Live {
             "VIES has no VAT registration for this number.".into(),
         ),
     };
-    Live {
+    Ok(Live {
         checked_at,
         data: json!({
             "name": field("name"),
@@ -96,7 +111,7 @@ fn answer(r: &Reply, prefix: &str) -> Live {
             "consultation_number": field("requestIdentifier"),
         }),
         ..Live::new(VIES.name, status, message)
-    }
+    })
 }
 
 #[cfg(test)]
@@ -110,7 +125,7 @@ mod tests {
             body: r#"{"actionSucceed":false,"errorWrappers":[{"error":"NEW_CODE"}]}"#.into(),
             retry_after: None,
         };
-        let live = answer(&r, "DE");
+        let live = answer(&r, "DE").unwrap();
         assert_eq!(live.status, LiveStatus::Unavailable);
         assert_eq!(live.code.as_deref(), Some("NEW_CODE"));
         let empty = Reply {
@@ -118,7 +133,7 @@ mod tests {
             ..r
         };
         assert_eq!(
-            answer(&empty, "DE").message,
+            answer(&empty, "DE").unwrap().message,
             "VIES sent a response we couldn't read."
         );
     }

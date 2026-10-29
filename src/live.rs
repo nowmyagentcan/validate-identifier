@@ -67,6 +67,8 @@ pub struct Reply {
 }
 
 pub struct Client {
+    /// `--requester` as prefix and number, for the sources that return consultation numbers.
+    pub requester: Option<(String, String)>,
     agent: Agent,
     bases: HashMap<&'static str, String>,
     last: HashMap<&'static str, Instant>,
@@ -95,6 +97,7 @@ impl Client {
             .build()
             .into();
         Ok(Client {
+            requester: None,
             agent,
             bases,
             last: HashMap::new(),

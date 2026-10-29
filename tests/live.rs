@@ -465,3 +465,82 @@ fn holds_the_live_limit() {
         "✗ 1001 values; at most 1,000 per run with --live.\n  Split the list, or check it offline first.\n"
     );
 }
+
+#[test]
+fn sends_the_requester_to_vies_for_a_consultation_number() {
+    let mock = Mock::start(|_| {
+        let mut ok: Value = serde_json::from_str(&vies_ok("EXAMPLE LTD")).unwrap();
+        ok["requestIdentifier"] = "WAPIAAAAZ1QX4Q2B".into();
+        reply(200, ok.to_string())
+    });
+    let (code, v) = mock.json(
+        &[
+            "check",
+            "IE6388047V",
+            "-t",
+            "vat",
+            "--live",
+            "--requester",
+            "de 136 695 976",
+        ],
+        &[],
+    );
+    assert_eq!(code, 0);
+    assert_eq!(
+        mock.requests()[0].json(),
+        json!({"countryCode": "IE", "vatNumber": "6388047V",
+               "requesterMemberStateCode": "DE", "requesterNumber": "136695976"})
+    );
+    assert_eq!(
+        first(&v)["live"]["data"]["consultation_number"],
+        "WAPIAAAAZ1QX4Q2B"
+    );
+    assert_eq!(first(&v)["warnings"], json!([]));
+
+    // A UK or Swiss requester isn't sent to VIES.
+    let (_, v) = mock.json(
+        &[
+            "check",
+            "IE6388047V",
+            "-t",
+            "vat",
+            "--live",
+            "--requester",
+            "GB434031439",
+        ],
+        &[],
+    );
+    assert!(mock.requests()[1].json().get("requesterNumber").is_none());
+    assert_eq!(
+        first(&v)["warnings"],
+        json!([{"code": "requester_not_used", "message": "--requester is a GB number, so it wasn't sent to VIES."}])
+    );
+}
+
+#[test]
+fn stops_when_vies_rejects_the_requester() {
+    let mock = Mock::start(|_| vies_error("INVALID_REQUESTER_INFO"));
+    let (code, out, err) = mock.run(
+        &[
+            "check",
+            "IE6388047V",
+            "DE136695976",
+            "--live",
+            "--requester",
+            "DE136695976",
+        ],
+        &[],
+    );
+    assert_eq!((code, out.as_str()), (2, ""));
+    assert_eq!(
+        err,
+        "✗ VIES rejected your --requester number.\n  Pass your own valid VAT number, or leave out --requester.\n"
+    );
+    assert_eq!(mock.requests().len(), 1);
+    let (code, _, err) = vi(&["check", "IE6388047V", "--requester", "DE136695977"], &[]);
+    assert_eq!(code, 2);
+    assert_eq!(
+        err,
+        "✗ --requester DE136695977 isn't a valid VAT number.\n  Pass your own VAT number with its country prefix, e.g. DE136695976.\n"
+    );
+}

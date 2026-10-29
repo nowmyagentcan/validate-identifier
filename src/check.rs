@@ -8,7 +8,9 @@ use rlibphonenumber::enums::Region;
 use serde::Serialize;
 
 use crate::detect::{ambiguous, detect, found};
-use crate::item::{DATA, Data, Error, Found, Item, Kind, Live, LiveStatus, Summary, clean};
+use crate::item::{
+    DATA, Data, Error, Found, Item, Kind, Live, LiveStatus, Summary, Warning, a, clean,
+};
 use crate::live::{Client, Source, unavailable};
 use crate::source::vies::{self, VIES};
 
@@ -25,6 +27,8 @@ pub struct Options {
     pub region: Option<Region>,
     pub live: bool,
     pub progress: bool,
+    /// Your own VAT number, sent to VIES or HMRC for a consultation number.
+    pub requester: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -48,6 +52,7 @@ pub fn run(values: &[String], o: &Options) -> Result<Report, Error> {
         let message = format!("{} values; at most 10,000 per run.", values.len());
         return Err(usage(message, "Split the list into smaller files."));
     }
+    let requester = o.requester.as_deref().map(requester).transpose()?;
     if o.live && values.len() > MAX_LIVE {
         let message = format!(
             "{} values; at most 1,000 per run with --live.",
@@ -72,13 +77,26 @@ pub fn run(values: &[String], o: &Options) -> Result<Report, Error> {
         results.push(item);
     }
     if o.live {
-        live(&mut results, o.progress)?;
+        live(&mut results, o.progress, requester)?;
     }
     Ok(Report {
         summary: Summary::of(&results),
         results,
         data: &DATA,
     })
+}
+
+/// `--requester` as prefix and number, when it is a valid VAT number.
+fn requester(raw: &str) -> Result<(String, String), Error> {
+    let f = crate::vat::check(&Kind::Vat.normalize(raw));
+    let part = |k: &str| f.details[k].as_str().unwrap_or_default().to_string();
+    match f.outcome {
+        Ok(_) => Ok((part("prefix"), part("number"))),
+        Err(_) => Err(usage(
+            format!("--requester {raw} isn't a valid VAT number."),
+            "Pass your own VAT number with its country prefix, e.g. DE136695976.",
+        )),
+    }
 }
 
 /// A registry and how to ask it about up to `batch` values (one answer per value).
@@ -110,8 +128,13 @@ fn route(i: &Item) -> Option<&'static Route> {
 /// the answers by the verdict rule. After two failures in a row a source (VIES: a country,
 /// when VIES itself says it is down) is skipped for the rest of the run; a source that needs
 /// credentials it doesn't have isn't asked again.
-fn live(items: &mut [Item], progress: bool) -> Result<(), Error> {
+fn live(
+    items: &mut [Item],
+    progress: bool,
+    requester: Option<(String, String)>,
+) -> Result<(), Error> {
     let mut client = Client::new(&ROUTES.each_ref().map(|r| r.source))?;
+    client.requester = requester;
     let mut lookups: Vec<(&Route, Vec<usize>)> = Vec::new();
     let mut seen: HashMap<(Option<Kind>, Option<&str>), usize> = HashMap::new();
     for (i, item) in items.iter().enumerate() {
@@ -195,7 +218,17 @@ fn live(items: &mut [Item], progress: bool) -> Result<(), Error> {
         draw("");
     }
     for (i, live) in answers {
+        let unused = match (&client.requester, live.source) {
+            (Some((p, _)), "VIES") if !vies::uses(p) => Some((a(p), "VIES")),
+            _ => None,
+        };
         items[i].answer(live);
+        if let Some((number, source)) = unused {
+            items[i].warnings.push(Warning {
+                code: "requester_not_used",
+                message: format!("--requester is {number} number, so it wasn't sent to {source}."),
+            });
+        }
     }
     Ok(())
 }
