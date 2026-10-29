@@ -153,7 +153,7 @@ fn route(i: &Item) -> Option<&'static Route> {
         (true, Kind::Vat, Some("CHE")) | (true, Kind::Uid, _) => Some(&ROUTES[2]),
         (true, Kind::Abn, _) => Some(&ROUTES[3]),
         (true, Kind::Lei, _) => Some(&ROUTES[4]),
-        (true, Kind::Vat, Some(p)) if p != "GB" && p != "CHE" => Some(&ROUTES[0]),
+        (true, Kind::Vat, Some(p)) if p != "GB" => Some(&ROUTES[0]),
         _ => None,
     }
 }
