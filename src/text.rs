@@ -4,7 +4,7 @@
 use std::fmt::Write;
 
 use crate::check::Report;
-use crate::item::{Error, Item, Kind, Status, Summary};
+use crate::item::{Error, Item, Kind, Status, Summary, minute};
 
 /// What the tool is for, in one sentence: the help's first line.
 pub const SENTENCE: &str = "Check VAT numbers, IBANs, phone numbers, emails, LEIs and Peppol IDs.";
@@ -60,6 +60,13 @@ fn verdict(s: Status) -> (&'static str, &'static str, &'static str) {
 fn facts(i: &Item) -> String {
     let d = &i.details;
     let mut facts: Vec<String> = Vec::new();
+    if let Some(live) = i.live.as_ref().filter(|l| l.answered()) {
+        facts.push(format!("{} {}", live.source, minute(&live.checked_at)));
+        let name = ["name", "entity_name", "legal_name"]
+            .iter()
+            .find_map(|k| live.data[k].as_str());
+        facts.extend(name.map(String::from));
+    }
     if i.status == Status::Valid {
         match i.kind {
             Some(Kind::Iban) => facts.push(d["print"].as_str().unwrap_or_default().into()),
@@ -113,7 +120,8 @@ pub fn report(r: &Report) -> String {
             "{colour}{mark}{RESET} {BOLD}{value:<vw$}{RESET}  {DIM}{label:<tw$}{RESET}  {colour}{word}{RESET}{}",
             facts(i)
         );
-        if let Some(hint) = i.error.as_ref().and_then(|e| e.hint) {
+        let live_hint = i.live.as_ref().and_then(|l| l.hint);
+        if let Some(hint) = live_hint.or(i.error.as_ref().and_then(|e| e.hint)) {
             let _ = writeln!(out, "{:w$}{DIM}{hint}{RESET}", "", w = vw + tw + 6);
         }
         for w in &i.warnings {

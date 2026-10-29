@@ -307,7 +307,14 @@ fn shows_the_sentence_types_and_examples_in_help() {
             out.contains("\nExamples:\n  validate-identifier check DE44500105175407324931\n"),
             "{args:?}"
         );
-        assert!(out.ends_with("NO_COLOR  no colour\n"), "{args:?}");
+        assert!(
+            out.contains("\nNothing leaves this computer unless you pass --live.\n"),
+            "{args:?}"
+        );
+        assert!(
+            out.ends_with("check -f customers.txt --live --json\n"),
+            "{args:?}"
+        );
     }
     let (_, out, _) = run(&["--help"]);
     assert!(
@@ -856,7 +863,6 @@ fn turns_away_bad_usage_with_exit_2() {
         &["check"],
         &["check", "x", "-r"],
         &["check", "-f"],
-        &["check", "x", "--live"],
     ] {
         let (code, out, err) = run(args);
         assert_eq!((code, out.as_str()), (2, ""), "{args:?}");

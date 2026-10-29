@@ -1,0 +1,125 @@
+//! VIES, the EU's VAT number check, for EU and XI numbers. Its errors arrive as
+//! `errorWrappers`, often with HTTP 200.
+
+use std::time::Duration;
+
+use serde_json::{Value, json};
+use ureq::http::Request;
+
+use crate::item::{Error, Item, Live, LiveStatus, at, minute};
+use crate::live::{Client, Reply, Source, unreadable};
+
+pub const VIES: Source = Source {
+    name: "VIES",
+    var: "VALIDATE_IDENTIFIER_VIES_URL",
+    base: "https://ec.europa.eu",
+    gap: Duration::from_secs(1),
+};
+
+const PATH: &str = "/taxation_customs/vies/rest-api/check-vat-number";
+
+/// The codes that mean "too many requests right now".
+const BUSY: [&str; 5] = [
+    "SERVER_BUSY",
+    "GLOBAL_MAX_CONCURRENT_REQ",
+    "GLOBAL_MAX_CONCURRENT_REQ_TIME",
+    "MS_MAX_CONCURRENT_REQ",
+    "MS_MAX_CONCURRENT_REQ_TIME",
+];
+
+pub fn ask(c: &mut Client, items: &[&Item]) -> Result<Vec<Live>, Error> {
+    let d = &items[0].details;
+    let prefix = d["prefix"].as_str().unwrap_or_default();
+    let body = json!({"countryCode": prefix, "vatNumber": d["number"]});
+    let req = Request::post(c.url(&VIES, PATH))
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .body(body.to_string().into_bytes())
+        .expect("a valid request");
+    let live = match c.send(&VIES, req) {
+        Ok(r) => answer(&r, prefix),
+        Err(failed) => failed,
+    };
+    Ok(vec![live])
+}
+
+/// One answer as a live status (spec §3.6).
+fn answer(r: &Reply, prefix: &str) -> Live {
+    let v: Value = serde_json::from_str(&r.body).unwrap_or_default();
+    if let Some(code) = v["errorWrappers"][0]["error"].as_str() {
+        let (status, message) = match code {
+            "INVALID_INPUT" => (
+                LiveStatus::NotFound,
+                format!("VIES says this isn't a valid {prefix} VAT number (INVALID_INPUT)."),
+            ),
+            c if BUSY.contains(&c) => (
+                LiveStatus::RateLimited,
+                format!("VIES is busy ({c}). Try again in a minute."),
+            ),
+            c => (
+                LiveStatus::Unavailable,
+                format!(
+                    "VIES didn't answer for {prefix} ({c}). This is not a verdict on the number. Try again later."
+                ),
+            ),
+        };
+        let busy = status == LiveStatus::RateLimited;
+        return Live {
+            code: Some(code.into()),
+            retry_after: busy.then_some(60),
+            ..Live::new(VIES.name, status, message)
+        };
+    }
+    if r.status != 200 {
+        return r.failed(&VIES);
+    }
+    let Some(valid) = v["valid"].as_bool() else {
+        return unreadable(&VIES, &r.body);
+    };
+    let checked_at = at(v["requestDate"].as_str());
+    let field = |k: &str| v[k].as_str().filter(|s| !s.is_empty() && *s != "---");
+    let (status, message) = match valid {
+        true => (
+            LiveStatus::Active,
+            format!("Registered for VAT (VIES, {}).", minute(&checked_at)),
+        ),
+        false => (
+            LiveStatus::NotFound,
+            "VIES has no VAT registration for this number.".into(),
+        ),
+    };
+    Live {
+        checked_at,
+        data: json!({
+            "name": field("name"),
+            "address": field("address"),
+            "consultation_number": field("requestIdentifier"),
+        }),
+        ..Live::new(VIES.name, status, message)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_error_codes_are_never_a_verdict() {
+        let r = Reply {
+            status: 200,
+            body: r#"{"actionSucceed":false,"errorWrappers":[{"error":"NEW_CODE"}]}"#.into(),
+            retry_after: None,
+        };
+        let live = answer(&r, "DE");
+        assert_eq!(live.status, LiveStatus::Unavailable);
+        assert_eq!(live.code.as_deref(), Some("NEW_CODE"));
+        let empty = Reply {
+            body: "{}".into(),
+            ..r
+        };
+        assert_eq!(
+            answer(&empty, "DE").message,
+            "VIES sent a response we couldn't read."
+        );
+    }
+}

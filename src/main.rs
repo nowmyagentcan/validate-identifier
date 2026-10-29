@@ -15,15 +15,19 @@ static VERSION: LazyLock<String> = LazyLock::new(validate_identifier::version);
 
 const EXAMPLES: &str =
     "Types: iban, vat (EU, XI, GB, CH), phone, email, lei, abn, uid (Swiss), eori, peppol.
+Nothing leaves this computer unless you pass --live.
 
-\x1b[1;4mExamples:\x1b[0m
+[1;4mEnvironment (live checks):[0m
+  VALIDATE_IDENTIFIER_VIES_URL         base URL (tests, mirrors)
+  HTTPS_PROXY, NO_PROXY                proxy for HTTPS requests
+  NO_COLOR                             no colour
+
+[1;4mExamples:[0m
   validate-identifier check DE44500105175407324931
   validate-identifier check \"+44 20 7946 0958\" \"07911 123456\" -r GB
+  validate-identifier check DE136695976 --live
   validate-identifier check BE0202239951 -t peppol
-  validate-identifier check -f customers.txt --json
-
-[1;4mEnvironment:[0m
-  NO_COLOR  no colour";
+  validate-identifier check -f customers.txt --live --json";
 
 const TYPES: [&str; 10] = [
     "auto", "iban", "vat", "phone", "email", "lei", "abn", "uid", "eori", "peppol",
@@ -46,7 +50,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Check identifiers
+    /// Check identifiers, offline or with the official registries
     #[command(
         after_help = EXAMPLES,
         override_usage = "validate-identifier check <VALUE>... [OPTIONS]
@@ -64,6 +68,9 @@ enum Command {
         #[arg(short = 't', long = "type", value_name = "T", default_value = "auto",
               value_parser = TYPES, hide_possible_values = true)]
         kind: String,
+        /// Ask the official registries over the network
+        #[arg(short, long)]
+        live: bool,
         /// Region for phone numbers without +
         #[arg(short, long, value_name = "CC")]
         region: Option<String>,
@@ -73,7 +80,7 @@ enum Command {
         /// Print one JSON object
         #[arg(long)]
         json: bool,
-        /// Show timings on stderr
+        /// Show requests and timings on stderr (secrets hidden)
         #[arg(long)]
         debug: bool,
     },
@@ -124,6 +131,7 @@ fn run(command: Command) -> Result<(String, u8), Error> {
     let Command::Check {
         values,
         kind,
+        live,
         region,
         file,
         json,
@@ -147,6 +155,7 @@ fn run(command: Command) -> Result<(String, u8), Error> {
     let o = Options {
         kind: Kind::ALL.into_iter().find(|k| k.name() == kind),
         region: region.as_deref().map(phone::region).transpose()?,
+        live,
     };
     let start = Instant::now();
     let report = check::run(&values, &o)?;

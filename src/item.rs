@@ -264,11 +264,19 @@ pub struct Live {
 }
 
 impl Live {
+    /// Whether the registry gave an answer about the number (not a failure).
+    pub fn answered(&self) -> bool {
+        matches!(
+            self.status,
+            LiveStatus::Active | LiveStatus::Inactive | LiveStatus::NotFound
+        )
+    }
+
     pub fn new(source: &'static str, status: LiveStatus, message: impl Into<String>) -> Self {
         Live {
             source,
             status,
-            checked_at: utc(jiff::Timestamp::now()),
+            checked_at: at(None),
             code: None,
             retry_after: None,
             data: Value::Null,
@@ -279,11 +287,63 @@ impl Live {
     }
 }
 
+/// `checked_at` to the minute, for people: `2026-10-29 10:12 UTC`.
+pub fn minute(checked_at: &str) -> String {
+    format!(
+        "{} {} UTC",
+        checked_at.get(..10).unwrap_or(checked_at),
+        checked_at.get(11..16).unwrap_or_default()
+    )
+}
+
+/// A source's own timestamp (any RFC 3339 offset) as `checked_at`, else now.
+pub fn at(source_time: Option<&str>) -> String {
+    let t = source_time.and_then(|s| s.parse().ok());
+    utc(t.unwrap_or_else(jiff::Timestamp::now))
+}
+
 /// A moment as RFC 3339 UTC to the second: `2026-10-29T10:12:03Z`.
 pub fn utc(t: jiff::Timestamp) -> String {
     jiff::Timestamp::from_second(t.as_second())
         .unwrap_or(t)
         .to_string()
+}
+
+impl Item {
+    /// Applies a registry's answer by the verdict rule (spec §2.4 rules 3-4): an answer has
+    /// the last word, even over failed check digits; without one the offline verdict stands,
+    /// shown as the reason it couldn't be confirmed.
+    pub fn answer(&mut self, live: Live) {
+        let status = match live.status {
+            LiveStatus::Active => Status::Valid,
+            LiveStatus::Inactive => Status::Inactive,
+            LiveStatus::NotFound => Status::NotFound,
+            LiveStatus::Unavailable => Status::Unavailable,
+            LiveStatus::RateLimited => Status::RateLimited,
+            LiveStatus::NotConfigured => Status::NotConfigured,
+        };
+        if live.answered() {
+            if self.error.take().is_some() && status == Status::Valid {
+                let message = format!(
+                    "Our check digits say invalid, but {} has this number registered. Please report it at github.com/nowmyagentcan/validate-identifier/issues.",
+                    live.source
+                );
+                self.warnings.push(Warning {
+                    code: "check_digits_disagree",
+                    message,
+                });
+            }
+            (self.status, self.checked) = (status, Checked::Live);
+            self.message.clone_from(&live.message);
+        } else if let Some(e) = &self.error {
+            let wrong = e.message.trim_end_matches('.');
+            self.message = format!("{wrong}; {} didn't answer either.", live.source);
+        } else {
+            self.status = status;
+            self.message.clone_from(&live.message);
+        }
+        self.live = Some(live);
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Serialize)]

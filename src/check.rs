@@ -7,16 +7,19 @@ use rlibphonenumber::enums::Region;
 use serde::Serialize;
 
 use crate::detect::{ambiguous, detect, found};
-use crate::item::{DATA, Data, Error, Found, Item, Kind, Summary, clean};
+use crate::item::{DATA, Data, Error, Found, Item, Kind, Live, Summary, clean};
+use crate::live::{Client, Source};
+use crate::source::vies::{self, VIES};
 
 pub const MAX_VALUES: usize = 10_000;
 pub const MAX_BYTES: usize = 256;
 
-/// `kind: None` detects each value's type.
+/// `kind: None` detects each value's type; `live` asks the registries.
 #[derive(Default)]
 pub struct Options {
     pub kind: Option<Kind>,
     pub region: Option<Region>,
+    pub live: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -55,11 +58,67 @@ pub fn run(values: &[String], o: &Options) -> Result<Report, Error> {
         };
         results.push(item);
     }
+    if o.live {
+        live(&mut results)?;
+    }
     Ok(Report {
         summary: Summary::of(&results),
         results,
         data: &DATA,
     })
+}
+
+/// A registry and how to ask it about a list of values (one answer per value).
+struct Route {
+    source: &'static Source,
+    ask: fn(&mut Client, &[&Item]) -> Result<Vec<Live>, Error>,
+}
+
+const ROUTES: [Route; 1] = [Route {
+    source: &VIES,
+    ask: vies::ask,
+}];
+
+/// The registry for an item whose format passed (its check digits may have failed).
+fn route(i: &Item) -> Option<&'static Route> {
+    let ok = i
+        .error
+        .as_ref()
+        .is_none_or(|e| e.code.ends_with("_check_digits"));
+    match (i.kind?, i.details["prefix"].as_str()) {
+        (Kind::Vat, Some(p)) if ok && p != "GB" && p != "CHE" => Some(&ROUTES[0]),
+        _ => None,
+    }
+}
+
+/// Asks each value's registry once, one source after another in input order, and applies
+/// the answers by the verdict rule.
+fn live(items: &mut [Item]) -> Result<(), Error> {
+    let mut client = Client::new(&ROUTES.each_ref().map(|r| r.source))?;
+    let mut lookups: Vec<(&Route, Vec<usize>)> = Vec::new();
+    let mut seen: HashMap<(Option<Kind>, Option<&str>), usize> = HashMap::new();
+    for (i, item) in items.iter().enumerate() {
+        let Some(r) = route(item) else { continue };
+        let key = (item.kind, item.value.as_deref());
+        match seen.get(&key) {
+            Some(&j) => lookups[j].1.push(i),
+            None => {
+                seen.insert(key, lookups.len());
+                lookups.push((r, vec![i]));
+            }
+        }
+    }
+    let mut answers = Vec::with_capacity(lookups.len());
+    for r in &ROUTES {
+        for (_, same) in lookups.iter().filter(|(l, _)| std::ptr::eq(*l, r)) {
+            let live = (r.ask)(&mut client, &[&items[same[0]]])?;
+            answers.extend(same.iter().map(|&i| (i, live[0].clone())));
+        }
+    }
+    for (i, live) in answers {
+        items[i].answer(live);
+    }
+    Ok(())
 }
 
 /// One value's offline item.
