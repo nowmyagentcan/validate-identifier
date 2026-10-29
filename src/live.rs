@@ -108,8 +108,8 @@ pub struct Client {
     /// `--dns`: the DNS server to ask instead of the system's.
     pub dns: Option<SocketAddr>,
     resolver: Option<Result<Dns, String>>,
-    /// Host name lookups for HTTP requests that failed in a row, in any source.
-    lookups_failed: u32,
+    /// HTTP requests in any source that failed in a row for want of DNS or a route, and which.
+    offline: (u32, &'static str),
     agent: Agent,
     bases: HashMap<&'static str, String>,
     start: Instant,
@@ -146,7 +146,7 @@ impl Client {
             token: None,
             dns: None,
             resolver: None,
-            lookups_failed: 0,
+            offline: (0, ""),
             agent,
             bases,
             start: Instant::now(),
@@ -179,19 +179,23 @@ impl Client {
     }
 
     /// Sends one request once `s`'s gap since its last request start has passed; a failure is
-    /// worded for people. The system's DNS serves every source: after it failed twice in a row,
-    /// no request is sent for the rest of the run, as each would wait for it again.
+    /// worded for people. The system's DNS and routes serve every source: after a lookup or a
+    /// connection with no route failed twice in a row, no request is sent for the rest of the
+    /// run, as each would fail the same way.
     #[expect(clippy::result_large_err, reason = "one per paced request")]
     pub fn send(&mut self, s: &Source, req: Request<Vec<u8>>) -> Result<Reply, Live> {
-        if self.lookups_failed >= 2 {
-            let message = "Skipped: this computer's DNS failed twice in a row in this run. This is not a verdict on the number.";
+        if let (2.., what) = self.offline {
+            let message = format!(
+                "Skipped: this computer's {what} failed twice in a row in this run. This is not a verdict on the number."
+            );
             return Err(unavailable(s, message));
         }
         let host = req.uri().host().unwrap_or_default().to_string();
         let answer = self.fetch(s, req);
-        let lookup = matches!(&answer, Err(ureq::Error::Timeout(ureq::Timeout::Resolve)))
-            || matches!(&answer, Err(ureq::Error::Io(e)) if lookup_failed(e));
-        self.lookups_failed = if lookup { self.lookups_failed + 1 } else { 0 };
+        self.offline = match answer.as_ref().err().and_then(offline) {
+            Some(what) => (self.offline.0 + 1, what),
+            None => (0, ""),
+        };
         answer.map_err(|e| {
             let proxy = self.agent.config().proxy().map(|p| p.host().to_string());
             failure(s, &host, proxy.as_deref(), e)
@@ -393,6 +397,17 @@ fn failure(s: &Source, host: &str, proxy: Option<&str>, e: ureq::Error) -> Live 
     }
 }
 
+/// What failed on this computer rather than at the registry: its DNS, or its network (no
+/// route to any registry).
+fn offline(e: &ureq::Error) -> Option<&'static str> {
+    match e {
+        ureq::Error::Timeout(ureq::Timeout::Resolve) => Some("DNS"),
+        ureq::Error::Io(e) if lookup_failed(e) => Some("DNS"),
+        ureq::Error::Io(e) if e.kind() == std::io::ErrorKind::NetworkUnreachable => Some("network"),
+        _ => None,
+    }
+}
+
 /// Whether the system couldn't look up a host name: std words it on Unix; Windows gives
 /// WSAHOST_NOT_FOUND to WSANO_DATA.
 fn lookup_failed(e: &std::io::Error) -> bool {
@@ -494,7 +509,7 @@ mod tests {
     #[test]
     fn sends_nothing_once_the_system_dns_failed_twice() {
         let mut c = Client::new(&[&TEST]).unwrap();
-        c.lookups_failed = 2;
+        c.offline = (2, "DNS");
         let req = Request::get("https://example.org/")
             .body(Vec::new())
             .unwrap();
@@ -504,6 +519,34 @@ mod tests {
             "Skipped: this computer's DNS failed twice in a row in this run. This is not a verdict on the number."
         );
         assert!(!LAST.lock().unwrap().contains_key(TEST.name));
+    }
+
+    #[test]
+    fn a_network_without_a_route_counts_toward_the_run_wide_skip() {
+        let io = |e: std::io::Error| offline(&ureq::Error::Io(e));
+        assert_eq!(
+            io(std::io::ErrorKind::NetworkUnreachable.into()),
+            Some("network")
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            io(std::io::Error::from_raw_os_error(10051)),
+            Some("network")
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(io(std::io::Error::from_raw_os_error(101)), Some("network"));
+        assert_eq!(io(std::io::Error::from_raw_os_error(11001)), Some("DNS"));
+        assert_eq!(io(std::io::ErrorKind::ConnectionReset.into()), None);
+        assert_eq!(offline(&ureq::Error::ConnectionFailed), None);
+        let mut c = Client::new(&[&TEST]).unwrap();
+        c.offline = (2, "network");
+        let req = Request::get("https://example.org/")
+            .body(Vec::new())
+            .unwrap();
+        assert_eq!(
+            c.send(&TEST, req).err().unwrap().message,
+            "Skipped: this computer's network failed twice in a row in this run. This is not a verdict on the number."
+        );
     }
 
     #[test]
