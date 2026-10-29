@@ -3,7 +3,9 @@
 
 mod common;
 
-use common::{Answer, GUID, HMRC_CREDS, Mock, TOKEN, closed_port, reply, vi};
+use common::{Answer, Dns, DnsStub, GUID, HMRC_CREDS, Mock, TOKEN, closed_port, name, reply, vi};
+use hickory_resolver::proto::rr::rdata::{A, MX};
+use hickory_resolver::proto::rr::{RData, RecordType};
 use serde_json::{Value, json};
 
 const UA: &str =
@@ -1485,4 +1487,151 @@ fn maps_every_hmrc_eori_failure() {
         assert_eq!(r["message"], message);
         assert_eq!(r["live"]["code"].as_str(), code);
     }
+}
+
+/// MX, A and AAAA answers for a few test domains.
+fn mail_dns(domain: &str, t: RecordType) -> Dns {
+    let mx = |p, host: &str| RData::MX(MX::new(p, name(host)));
+    match (domain, t) {
+        ("mail.example", RecordType::MX) => Dns::Records(vec![
+            mx(20, "mx2.mail.example."),
+            mx(10, "mx1.mail.example."),
+        ]),
+        ("nullmx.example", RecordType::MX) => Dns::Records(vec![mx(0, ".")]),
+        ("implicit.example", RecordType::A) => Dns::Records(vec![RData::A(A::new(192, 0, 2, 1))]),
+        ("gone.example", _) => Dns::NxDomain,
+        ("broken.example", _) => Dns::ServFail,
+        ("quiet.example" | "quiet2.example" | "quiet3.example", _) => Dns::Silence,
+        _ => Dns::Records(Vec::new()),
+    }
+}
+
+#[test]
+fn looks_up_mail_servers_once_per_domain() {
+    let dns = DnsStub::start(mail_dns);
+    let values = [
+        "a@mail.example",
+        "b@MAIL.example",
+        "c@nullmx.example",
+        "d@implicit.example",
+        "e@noaddr.example",
+        "f@gone.example",
+        "g@broken.example",
+        "h@[192.0.2.1]",
+    ];
+    let (code, v) = Mock::start(|_| reply(500, "")).json(
+        &[&["check", "--live", "--dns", &dns.addr][..], &values].concat(),
+        &[],
+    );
+    assert_eq!(code, 1);
+    let r = &v["results"];
+    let got: Vec<(&str, &str, &str)> = (0..8)
+        .map(|i| {
+            let r = &r[i];
+            (
+                r["status"].as_str().unwrap(),
+                r["live"]["data"]["kind"].as_str().unwrap_or("-"),
+                r["live"]["code"].as_str().unwrap_or("-"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("valid", "mx", "-"),
+            ("valid", "mx", "-"),
+            ("inactive", "null_mx", "-"),
+            ("valid", "implicit", "-"),
+            ("not_found", "none", "-"),
+            ("not_found", "none", "NXDOMAIN"),
+            ("unavailable", "-", "SERVFAIL"),
+            ("valid", "-", "-"),
+        ]
+    );
+    assert_eq!(
+        r[0]["live"]["data"]["mx"],
+        json!([{"preference": 10, "host": "mx1.mail.example"}, {"preference": 20, "host": "mx2.mail.example"}])
+    );
+    assert_eq!(r[0]["live"]["source"], "DNS");
+    assert!(
+        r[0]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Mail servers found for mail.example (DNS, ")
+    );
+    assert_eq!(r[2]["message"], "This domain says it accepts no email.");
+    assert!(
+        r[3]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("implicit.example lists no mail servers, so mail goes to its own address")
+    );
+    assert_eq!(
+        r[4]["message"],
+        "noaddr.example has no mail servers and no address."
+    );
+    assert_eq!(r[5]["message"], "gone.example doesn't exist (NXDOMAIN).");
+    assert_eq!(
+        r[6]["message"],
+        "Couldn't look up mail servers for broken.example: SERVFAIL."
+    );
+    assert_eq!(r[6]["checked"], "offline");
+    assert_eq!(r[7]["live"], Value::Null);
+    let asked = dns.queries();
+    let mail = asked.iter().filter(|(n, _)| n == "mail.example").count();
+    assert_eq!(mail, 1, "{asked:?}");
+    assert!(asked.contains(&("implicit.example".into(), RecordType::A)));
+    assert!(asked.contains(&("noaddr.example".into(), RecordType::AAAA)));
+    assert!(!asked.iter().any(|(n, _)| n.contains("192.0.2.1")));
+}
+
+#[test]
+fn gives_up_on_a_silent_dns_server_after_two_tries_and_two_domains() {
+    let dns = DnsStub::start(mail_dns);
+    let start = std::time::Instant::now();
+    let (code, v) = Mock::start(|_| reply(500, "")).json(
+        &[
+            "check",
+            "a@quiet.example",
+            "b@quiet2.example",
+            "c@quiet3.example",
+            "--live",
+            "--dns",
+            &dns.addr,
+        ],
+        &[],
+    );
+    let took = start.elapsed().as_secs_f64();
+    assert_eq!(code, 3);
+    assert!((19.0..30.0).contains(&took), "{took}");
+    let r = &v["results"];
+    assert_eq!(
+        r[0]["message"],
+        "Couldn't look up mail servers for quiet.example: timeout."
+    );
+    assert_eq!(
+        r[2]["message"],
+        "Skipped: DNS failed twice in a row in this run. This is not a verdict on the number."
+    );
+    // Two tries of 5 s for each of the first two domains (the resolver may resend within a
+    // try); the third domain is never asked.
+    let asked = dns.queries();
+    assert!(
+        asked.iter().any(|(n, _)| n == "quiet2.example"),
+        "{asked:?}"
+    );
+    assert!(!asked.iter().any(|(n, _)| n == "quiet3.example"));
+}
+
+#[test]
+fn takes_only_an_ip_address_for_dns() {
+    let (code, out, err) = vi(
+        &["check", "a@mail.example", "--live", "--dns", "dns.example"],
+        &[],
+    );
+    assert_eq!((code, out.as_str()), (2, ""));
+    assert_eq!(
+        err,
+        "✗ --dns dns.example isn't an IP address.\n  Pass an IP address, with a port if it isn't 53, e.g. 1.1.1.1 or 127.0.0.1:5353.\n"
+    );
 }

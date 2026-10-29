@@ -1,15 +1,18 @@
-//! A loopback HTTP server standing in for the registries, and the binary pointed at it. No
-//! test reaches the real services: every source's base URL is overridden.
+//! A loopback HTTP server and a UDP DNS server standing in for the registries, and the binary
+//! pointed at them. No test reaches the real services: every source's base URL is overridden
+//! and DNS goes to the stub through `--dns`.
 
 #![allow(dead_code)]
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use hickory_resolver::proto::op::{Message, ResponseCode};
+use hickory_resolver::proto::rr::{Name, RData, Record, RecordType};
 use serde_json::Value;
 
 /// The base URL override of every HTTP source.
@@ -201,4 +204,71 @@ pub fn vi(args: &[&str], env: &[(&str, &str)]) -> (i32, String, String) {
 pub fn closed_port() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     format!("http://{}", listener.local_addr().unwrap())
+}
+
+/// What the DNS stub answers to one query.
+pub enum Dns {
+    Records(Vec<RData>),
+    NxDomain,
+    ServFail,
+    /// Never answers.
+    Silence,
+}
+
+/// A UDP DNS server on loopback for `--dns`; it records each query's name and type.
+pub struct DnsStub {
+    pub addr: String,
+    log: Arc<Mutex<Vec<(String, RecordType)>>>,
+}
+
+impl DnsStub {
+    pub fn start(answer: impl Fn(&str, RecordType) -> Dns + Send + 'static) -> DnsStub {
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let addr = socket.local_addr().unwrap().to_string();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let queries = Arc::clone(&log);
+        thread::spawn(move || {
+            let mut buf = [0; 4096];
+            while let Ok((n, from)) = socket.recv_from(&mut buf) {
+                let Ok(asked) = Message::from_vec(&buf[..n]) else {
+                    continue;
+                };
+                let query = asked.queries[0].clone();
+                let name = query
+                    .name
+                    .to_ascii()
+                    .trim_end_matches('.')
+                    .to_ascii_lowercase();
+                queries
+                    .lock()
+                    .unwrap()
+                    .push((name.clone(), query.query_type));
+                let mut m = Message::response(asked.metadata.id, asked.metadata.op_code);
+                m.metadata.recursion_desired = asked.metadata.recursion_desired;
+                m.metadata.recursion_available = true;
+                m.add_query(query.clone());
+                match answer(&name, query.query_type) {
+                    Dns::Records(data) => {
+                        for d in data {
+                            m.add_answer(Record::from_rdata(query.name.clone(), 60, d));
+                        }
+                    }
+                    Dns::NxDomain => m.metadata.response_code = ResponseCode::NXDomain,
+                    Dns::ServFail => m.metadata.response_code = ResponseCode::ServFail,
+                    Dns::Silence => continue,
+                }
+                let _ = socket.send_to(&m.to_vec().unwrap(), from);
+            }
+        });
+        DnsStub { addr, log }
+    }
+
+    pub fn queries(&self) -> Vec<(String, RecordType)> {
+        self.log.lock().unwrap().clone()
+    }
+}
+
+/// A DNS name from text.
+pub fn name(s: &str) -> Name {
+    Name::from_ascii(s).unwrap()
 }

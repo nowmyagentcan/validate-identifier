@@ -80,6 +80,9 @@ enum Command {
         /// Your own VAT number, for a VIES or HMRC consultation number
         #[arg(long, value_name = "VAT")]
         requester: Option<String>,
+        /// DNS server for email and Peppol lookups
+        #[arg(long, value_name = "IP[:PORT]")]
+        dns: Option<String>,
         /// Region for phone numbers without +
         #[arg(short, long, value_name = "CC")]
         region: Option<String>,
@@ -142,6 +145,7 @@ fn run(command: Command) -> Result<(String, u8), Error> {
         kind,
         live,
         requester,
+        dns,
         region,
         file,
         json,
@@ -168,6 +172,10 @@ fn run(command: Command) -> Result<(String, u8), Error> {
         live,
         progress: live && !json && io::stderr().is_terminal(),
         requester,
+        dns: dns
+            .as_deref()
+            .map(validate_identifier::source::dns::server)
+            .transpose()?,
     };
     let start = Instant::now();
     let report = check::run(&values, &o)?;

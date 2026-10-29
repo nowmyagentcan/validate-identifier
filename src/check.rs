@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::io::Write;
+use std::net::SocketAddr;
 
 use rlibphonenumber::enums::Region;
 use serde::Serialize;
@@ -13,6 +14,7 @@ use crate::item::{
 };
 use crate::live::{Client, Source, unavailable};
 use crate::source::abn::{self, ABN};
+use crate::source::dns::{self, DNS};
 use crate::source::eos::{self, EOS};
 use crate::source::gleif::{self, GLEIF};
 use crate::source::hmrc::{self, HMRC};
@@ -34,6 +36,8 @@ pub struct Options {
     pub progress: bool,
     /// Your own VAT number, sent to VIES or HMRC for a consultation number.
     pub requester: Option<String>,
+    /// The DNS server for email and Peppol lookups, instead of the system's.
+    pub dns: Option<SocketAddr>,
 }
 
 #[derive(Debug, Serialize)]
@@ -82,7 +86,7 @@ pub fn run(values: &[String], o: &Options) -> Result<Report, Error> {
         results.push(item);
     }
     if o.live {
-        live(&mut results, o.progress, requester)?;
+        live(&mut results, o, requester)?;
     }
     Ok(Report {
         summary: Summary::of(&results),
@@ -117,7 +121,7 @@ const fn by(source: &'static Source, batch: usize, ask: Ask) -> Route {
     Route { source, batch, ask }
 }
 
-const ROUTES: [Route; 7] = [
+const ROUTES: [Route; 8] = [
     by(&VIES, 1, vies::ask),
     by(&HMRC, 1, hmrc::ask),
     by(&UID, 1, uid::ask),
@@ -125,6 +129,7 @@ const ROUTES: [Route; 7] = [
     by(&GLEIF, 100, gleif::ask),
     by(&EOS, 10, eos::ask),
     by(&HMRC, 10, hmrc::eori),
+    by(&DNS, 1, dns::ask),
 ];
 
 /// The index in ROUTES of the registry for an item whose format passed (its check digits
@@ -146,6 +151,14 @@ fn route(i: &Item) -> Option<usize> {
         (true, Kind::Vat, Some(p)) if p != "GB" => Some(0),
         (true, Kind::Eori, _) if i.country.as_deref() == Some("GB") => Some(6),
         (true, Kind::Eori, _) => Some(5),
+        // An address literal has no domain to look up.
+        (true, Kind::Email, _)
+            if i.details["domain"]
+                .as_str()
+                .is_some_and(|d| !d.starts_with('[')) =>
+        {
+            Some(7)
+        }
         _ => None,
     }
 }
@@ -154,18 +167,20 @@ fn route(i: &Item) -> Option<usize> {
 /// the answers by the verdict rule. After two failures in a row a source (VIES: a country,
 /// when VIES itself says it is down) is skipped for the rest of the run; a source that needs
 /// credentials it doesn't have isn't asked again.
-fn live(
-    items: &mut [Item],
-    progress: bool,
-    requester: Option<(String, String)>,
-) -> Result<(), Error> {
+fn live(items: &mut [Item], o: &Options, requester: Option<(String, String)>) -> Result<(), Error> {
     let mut client = Client::new(&ROUTES.each_ref().map(|r| r.source))?;
     client.requester = requester;
+    client.dns = o.dns;
     let mut lookups: Vec<(usize, Vec<usize>)> = Vec::new();
     let mut seen: HashMap<(Option<Kind>, Option<&str>), usize> = HashMap::new();
     for (i, item) in items.iter().enumerate() {
         let Some(r) = route(item) else { continue };
-        let key = (item.kind, item.value.as_deref());
+        // Emails share one lookup per domain.
+        let key = match item.kind {
+            Some(Kind::Email) => item.details["ascii_domain"].as_str(),
+            _ => item.value.as_deref(),
+        };
+        let key = (item.kind, key);
         match seen.get(&key) {
             Some(&j) => lookups[j].1.push(i),
             None => {
@@ -188,7 +203,7 @@ fn live(
             .collect();
         for chunk in mine.chunks(r.batch) {
             done += chunk.len();
-            if progress {
+            if o.progress {
                 let dots = if crate::text::unicode(true) {
                     "…"
                 } else {
@@ -246,7 +261,7 @@ fn live(
             }
         }
     }
-    if progress {
+    if o.progress {
         draw("");
     }
     for (i, live) in answers {

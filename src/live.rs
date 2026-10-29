@@ -1,19 +1,22 @@
 //! The registries' HTTP client: the OS trust store, proxies from the environment, base URL
-//! overrides, pacing per source, a 1 MiB answer cap and no redirects. `--debug` lines go to
-//! stderr with every secret replaced by REDACTED.
+//! overrides, pacing per source, a 1 MiB answer cap and no redirects; and DNS lookups.
+//! `--debug` lines go to stderr with every secret replaced by REDACTED.
 
 use std::collections::HashMap;
 use std::io::Write;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use hickory_resolver::proto::rr::RecordType;
 use ureq::Agent;
 use ureq::http::Request;
 use ureq::tls::{RootCerts, TlsConfig};
 
 use crate::check::usage;
 use crate::item::{Error, Live, LiveStatus};
+use crate::source::dns::{Dns, Records};
 
 /// One registry: its name in results, its base URL override, its default base and the least
 /// time between two request starts (spec §7.2).
@@ -74,6 +77,9 @@ pub struct Client {
     pub requester: Option<(String, String)>,
     /// HMRC's bearer token, once fetched.
     pub token: Option<String>,
+    /// `--dns`: the DNS server to ask instead of the system's.
+    pub dns: Option<SocketAddr>,
+    resolver: Option<Result<Dns, String>>,
     agent: Agent,
     bases: HashMap<&'static str, String>,
     last: HashMap<&'static str, Instant>,
@@ -85,6 +91,7 @@ impl Client {
     pub fn new(sources: &[&Source]) -> Result<Self, Error> {
         let bases = sources
             .iter()
+            .filter(|s| !s.var.is_empty())
             .map(|s| Ok((s.name, base(s, std::env::var(s.var).ok())?)))
             .collect::<Result<_, Error>>()?;
         let ring = Arc::new(rustls::crypto::ring::default_provider());
@@ -104,6 +111,8 @@ impl Client {
         Ok(Client {
             requester: None,
             token: None,
+            dns: None,
+            resolver: None,
             agent,
             bases,
             last: HashMap::new(),
@@ -114,6 +123,26 @@ impl Client {
     /// `path` at `s`'s base URL.
     pub fn url(&self, s: &Source, path: &str) -> String {
         format!("{}{path}", self.bases[s.name])
+    }
+
+    /// `name`'s DNS records of type `t`, from a resolver made on first use.
+    pub fn lookup(&mut self, name: &str, t: RecordType) -> Result<Records, String> {
+        let since = self.start.elapsed().as_secs_f64();
+        debug(format!("DNS {t} {name} (+{since:.3} s)"));
+        let at = Instant::now();
+        let server = self.dns;
+        let answer = match self.resolver.get_or_insert_with(|| Dns::new(server)) {
+            Ok(dns) => dns.lookup(name, t),
+            Err(why) => Err(why.clone()),
+        };
+        let ms = at.elapsed().as_millis();
+        match &answer {
+            Ok(Records::Some(r)) => debug(format!("DNS {} records in {ms} ms", r.len())),
+            Ok(Records::None) => debug(format!("DNS no {t} records in {ms} ms")),
+            Ok(Records::NxDomain) => debug(format!("DNS NXDOMAIN in {ms} ms")),
+            Err(why) => debug(format!("DNS failed in {ms} ms: {why}")),
+        }
+        answer
     }
 
     /// Sends one request once `s`'s gap since its last request start has passed.
