@@ -67,6 +67,15 @@ fn read(args: JsonObject) -> Result<(Vec<String>, Options), Error> {
         let message = format!("{n} values; at most 1,000 per call.");
         return Err(usage(message, "Split the list."));
     }
+    // The schema's 1-256 characters per value, for clients that don't check it.
+    if let Some(i) = r.values.iter().position(|v| v.is_empty()) {
+        let message = format!("Value {} is empty.", i + 1);
+        return Err(usage(message, "Remove it, or pass the value."));
+    }
+    if let Some(i) = r.values.iter().position(|v| v.chars().count() > 256) {
+        let message = format!("Value {} is longer than 256 characters.", i + 1);
+        return Err(usage(message, "Check one identifier per value."));
+    }
     if r.live && n > MAX_LIVE {
         let message = format!("{n} values; at most 100 per call with live true.");
         return Err(usage(message, "Split the list, or set live to false."));

@@ -154,10 +154,10 @@ fn answers_like_the_cli() {
             &["07911 123456", "-r", "gb"],
         ),
         (
-            json!({"values": ["0208:0202239951", "x".repeat(257)], "requester_vat": "DE136695976"}),
+            json!({"values": ["0208:0202239951", "x".repeat(256)], "requester_vat": "DE136695976"}),
             &[
                 "0208:0202239951",
-                &"x".repeat(257),
+                &"x".repeat(256),
                 "--requester",
                 "DE136695976",
             ],
@@ -350,7 +350,6 @@ fn ends_quietly_when_the_client_leaves_mid_session() {
 }
 
 #[test]
-#[ignore = "known bug: F08"]
 fn refuses_values_outside_the_advertised_lengths() {
     let long = "A".repeat(257);
     let calls = [
