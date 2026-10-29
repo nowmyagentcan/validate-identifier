@@ -80,6 +80,8 @@ pub struct Client {
     /// `--dns`: the DNS server to ask instead of the system's.
     pub dns: Option<SocketAddr>,
     resolver: Option<Result<Dns, String>>,
+    /// Host name lookups for HTTP requests that failed in a row, in any source.
+    lookups_failed: u32,
     agent: Agent,
     bases: HashMap<&'static str, String>,
     last: HashMap<&'static str, Instant>,
@@ -104,6 +106,7 @@ impl Client {
             .user_agent(USER_AGENT)
             .http_status_as_error(false)
             .max_redirects(0)
+            .timeout_resolve(Some(Duration::from_secs(4)))
             .timeout_connect(Some(Duration::from_secs(5)))
             .timeout_global(Some(Duration::from_secs(20)))
             .build()
@@ -113,6 +116,7 @@ impl Client {
             token: None,
             dns: None,
             resolver: None,
+            lookups_failed: 0,
             agent,
             bases,
             last: HashMap::new(),
@@ -146,11 +150,20 @@ impl Client {
     }
 
     /// Sends one request once `s`'s gap since its last request start has passed; a failure is
-    /// worded for people.
+    /// worded for people. The system's DNS serves every source: after it failed twice in a row,
+    /// no request is sent for the rest of the run, as each would wait for it again.
     #[expect(clippy::result_large_err, reason = "one per paced request")]
     pub fn send(&mut self, s: &Source, req: Request<Vec<u8>>) -> Result<Reply, Live> {
+        if self.lookups_failed >= 2 {
+            let message = "Skipped: this computer's DNS failed twice in a row in this run. This is not a verdict on the number.";
+            return Err(unavailable(s, message));
+        }
         let host = req.uri().host().unwrap_or_default().to_string();
-        self.fetch(s, req).map_err(|e| {
+        let answer = self.fetch(s, req);
+        let lookup = matches!(&answer, Err(ureq::Error::Timeout(ureq::Timeout::Resolve)))
+            || matches!(&answer, Err(ureq::Error::Io(e)) if lookup_failed(e));
+        self.lookups_failed = if lookup { self.lookups_failed + 1 } else { 0 };
+        answer.map_err(|e| {
             let proxy = self.agent.config().proxy().map(|p| p.host().to_string());
             failure(s, &host, proxy.as_deref(), e)
         })
@@ -297,9 +310,11 @@ fn failure(s: &Source, host: &str, proxy: Option<&str>, e: ureq::Error) -> Live 
         )
     };
     match e {
-        E::Timeout(T::Connect | T::Resolve) => reach("no answer within 5 s", 0),
+        E::Timeout(T::Resolve) => reach("DNS lookup took longer than 4 s", 0),
+        E::Timeout(T::Connect) => reach("no answer within 5 s", 0),
         E::Timeout(_) => unavailable(s, format!("{} took longer than 20 s.", s.name)),
         E::HostNotFound => reach("host not found", 0),
+        E::Io(e) if lookup_failed(&e) => reach("DNS lookup failed", 0),
         E::Io(e) => reach(&e.kind().to_string(), 1),
         E::ConnectionFailed => reach("connection failed", 1),
         E::ConnectProxyFailed(_) | E::InvalidProxyUrl => reach(
@@ -313,6 +328,14 @@ fn failure(s: &Source, host: &str, proxy: Option<&str>, e: ureq::Error) -> Live 
         }
         _ => unreadable(s, ""),
     }
+}
+
+/// Whether the system couldn't look up a host name: std words it on Unix; Windows gives
+/// WSAHOST_NOT_FOUND to WSANO_DATA.
+fn lookup_failed(e: &std::io::Error) -> bool {
+    e.raw_os_error()
+        .is_some_and(|c| (11001..=11004).contains(&c))
+        || e.to_string().starts_with("failed to lookup address")
 }
 
 fn certificate(s: &Source, host: &str, why: &str) -> Live {
@@ -402,6 +425,21 @@ mod tests {
     }
 
     #[test]
+    fn sends_nothing_once_the_system_dns_failed_twice() {
+        let mut c = Client::new(&[&TEST]).unwrap();
+        c.lookups_failed = 2;
+        let req = Request::get("https://example.org/")
+            .body(Vec::new())
+            .unwrap();
+        let skipped = c.send(&TEST, req).err().unwrap();
+        assert_eq!(
+            skipped.message,
+            "Skipped: this computer's DNS failed twice in a row in this run. This is not a verdict on the number."
+        );
+        assert!(c.last.is_empty());
+    }
+
+    #[test]
     fn values_are_percent_encoded() {
         assert_eq!(encode("a b&c=d+é~"), "a%20b%26c%3Dd%2B%C3%A9~");
     }
@@ -455,6 +493,19 @@ mod tests {
             ("Test took longer than 20 s.", 0)
         );
         assert_eq!(f(ureq::Error::HostNotFound).retries, 0);
+        for lookup in [
+            std::io::Error::other("failed to lookup address information: Try again"),
+            std::io::Error::from_raw_os_error(11002),
+        ] {
+            let no_dns = f(ureq::Error::Io(lookup));
+            assert_eq!(
+                (no_dns.message.as_str(), no_dns.retries),
+                (
+                    "Couldn't reach ec.europa.eu: DNS lookup failed. This is not a verdict on the number.",
+                    0
+                )
+            );
+        }
         assert!(
             f(ureq::Error::ConnectProxyFailed("x".into()))
                 .message
