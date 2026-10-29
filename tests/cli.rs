@@ -927,3 +927,75 @@ fn accepts_quoted_local_parts_with_angle_brackets() {
     let (_, r) = item("Jane <jane@example.com>", &[]);
     assert_eq!(r["error"]["code"], "email_display_name");
 }
+
+#[test]
+#[ignore = "known bug: R2-F06"]
+fn refuses_line_breaks_inside_an_email() {
+    for value in [
+        "\"a\r\nb\"@example.com",
+        "\"a\nb\"@example.com",
+        "a\r\nb@example.com",
+    ] {
+        let (code, r) = item(value, &["-t", "email"]);
+        assert_eq!((code, r["status"].as_str()), (1, Some("invalid")), "{r}");
+    }
+}
+
+#[test]
+fn passes_check_digits_computed_independently_and_fails_each_mutant() {
+    let digits = |s: &str| -> Vec<u64> { s.bytes().map(|b| u64::from(b - b'0')).collect() };
+    let dot = |w: &[u64], d: &[u64]| -> u64 { w.iter().zip(d).map(|(w, d)| w * d).sum() };
+    let abns = (51_824_753_000u64..)
+        .map(|n| n.to_string())
+        .filter(|s| {
+            let mut d = digits(s);
+            d[0] -= 1;
+            dot(&[10, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19], &d) % 89 == 0
+        })
+        .take(100);
+    let uids = (11_628_100u64..).filter_map(|n| {
+        let s = n.to_string();
+        match 11 - dot(&[5, 4, 3, 2, 7, 6, 5, 4], &digits(&s)) % 11 {
+            10 => None,
+            c => Some(format!("CHE{s}{}", c % 11)),
+        }
+    });
+    let leis = (0u64..).map(|n| {
+        let base = format!("5493AB{n:012}");
+        let number: String = (base.clone() + "00")
+            .chars()
+            .map(|c| c.to_digit(36).unwrap().to_string())
+            .collect();
+        let rem = number
+            .bytes()
+            .fold(0, |r, b| (r * 10 + u64::from(b - b'0')) % 97);
+        format!("{base}{:02}", 98 - rem)
+    });
+    let corpora: [(&str, Vec<String>); 3] = [
+        ("abn", abns.collect()),
+        ("uid", uids.take(100).collect()),
+        ("lei", leis.take(100).collect()),
+    ];
+    for (kind, good) in corpora {
+        let mutants: Vec<String> = good
+            .iter()
+            .map(|v| {
+                let (head, last) = v.split_at(v.len() - 1);
+                let d = last.parse::<u8>().unwrap();
+                format!("{head}{}", (d + 1) % 10)
+            })
+            .collect();
+        for (values, valid) in [(good, 100), (mutants, 0)] {
+            let args = [
+                &["check", "-t", kind][..],
+                &values.iter().map(String::as_str).collect::<Vec<_>>(),
+            ]
+            .concat();
+            let (_, v) = json(&args);
+            assert_eq!(v["summary"]["valid"], valid, "{kind}");
+            let codes = v["results"].as_array().unwrap().iter();
+            let mut codes = codes.filter_map(|r| r["error"]["code"].as_str());
+            assert!(codes.all(|c| c.ends_with("_check_digits")), "{v}");
+        }
+    }
+}
