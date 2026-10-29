@@ -180,8 +180,8 @@ fn refuses_bad_arguments_with_the_error_object() {
         (
             json!({"values": ["x"], "live": true, "foo": 1}),
             "bad_request",
-            "Unknown argument 'foo'.",
-            Some("Arguments: values, type, live, region, requester_vat."),
+            "Can't read the arguments: unknown field `foo`, expected one of `values`, `type`, `live`, `region`, `requester_vat`.",
+            None,
         ),
         (json!({"values": "DE136695976"}), "bad_request", "", None),
         (json!({}), "bad_request", "", None),

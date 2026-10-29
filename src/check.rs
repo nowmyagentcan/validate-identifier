@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 
 use rlibphonenumber::enums::Region;
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::detect::{ambiguous, detect, found};
 use crate::item::{
@@ -51,6 +51,49 @@ pub struct Report {
 
 pub fn usage(message: impl Into<String>, hint: &'static str) -> Error {
     Error::new("usage", message, Some(hint))
+}
+
+/// What the page and the MCP server are asked. A name it doesn't define is refused, so a
+/// misspelt option can't change the answer.
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Request {
+    /// The identifiers to check, one per item
+    #[schemars(length(min = 1, max = 1000), inner(length(min = 1, max = 256)))]
+    pub values: Vec<String>,
+    /// The identifier type; auto detects each value's
+    #[serde(rename = "type", default = "auto")]
+    #[schemars(extend("enum" = ["auto", "iban", "vat", "phone", "email", "lei", "abn", "uid", "eori", "peppol"]))]
+    pub kind: String,
+    /// Ask the official registries over the network (at most 100 values)
+    #[serde(default)]
+    pub live: bool,
+    /// Region for phone numbers written without +, 2 letters, e.g. GB
+    #[schemars(length(min = 2, max = 2))]
+    pub region: Option<String>,
+    /// Your own VAT number, to get a VIES or HMRC consultation number
+    pub requester_vat: Option<String>,
+}
+
+fn auto() -> String {
+    "auto".into()
+}
+
+impl Request {
+    /// The run's options; an unknown type or region is a usage error.
+    pub fn options(&self) -> Result<Options, Error> {
+        Ok(Options {
+            kind: kind(&self.kind)?,
+            region: self
+                .region
+                .as_deref()
+                .map(crate::phone::region)
+                .transpose()?,
+            live: self.live,
+            requester: self.requester_vat.clone(),
+            ..Options::default()
+        })
+    }
 }
 
 /// The error object the page and the MCP server answer with.

@@ -8,39 +8,14 @@ use rmcp::{ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use schemars::generate::SchemaSettings;
 use schemars::transform::RecursiveTransform;
 use schemars::{JsonSchema, Schema};
-use serde::Deserialize;
 use serde_json::Value;
 
-use crate::check::{self, Options, Report, failure, usage};
+use crate::check::{self, Options, Report, Request, failure, usage};
 use crate::item::Error;
-use crate::phone;
 
 /// Values per call, and per call with live checks (spec §2.3).
 const MAX_VALUES: usize = 1_000;
 const MAX_LIVE: usize = 100;
-
-#[derive(Deserialize, JsonSchema)]
-struct Args {
-    /// The identifiers to check, one per item
-    #[schemars(length(min = 1, max = 1000), inner(length(min = 1, max = 256)))]
-    values: Vec<String>,
-    /// The identifier type; auto detects each value's
-    #[serde(rename = "type", default = "auto")]
-    #[schemars(extend("enum" = ["auto", "iban", "vat", "phone", "email", "lei", "abn", "uid", "eori", "peppol"]))]
-    kind: String,
-    /// Ask the official registries over the network (at most 100 values)
-    #[serde(default)]
-    live: bool,
-    /// Region for phone numbers written without +, 2 letters, e.g. GB
-    #[schemars(length(min = 2, max = 2))]
-    region: Option<String>,
-    /// Your own VAT number, to get a VIES or HMRC consultation number
-    requester_vat: Option<String>,
-}
-
-fn auto() -> String {
-    "auto".into()
-}
 
 #[derive(Clone)]
 struct Server;
@@ -77,21 +52,14 @@ impl ServerHandler for Server {}
 /// The arguments as a run's values and options; a call the schema or the limits refuse is an
 /// error.
 fn read(args: JsonObject) -> Result<(Vec<String>, Options), Error> {
-    let names = input();
-    let names = names["properties"].as_object().expect("properties");
-    if let Some(unknown) = args.keys().find(|k| !names.contains_key(*k)) {
-        let hint = "Arguments: values, type, live, region, requester_vat.";
-        let message = format!("Unknown argument '{unknown}'.");
-        return Err(Error::new("bad_request", message, Some(hint)));
-    }
-    let a: Args = serde_json::from_value(Value::Object(args)).map_err(|e| {
+    let r: Request = serde_json::from_value(Value::Object(args)).map_err(|e| {
         Error::new(
             "bad_request",
             format!("Can't read the arguments: {e}."),
             None,
         )
     })?;
-    let n = a.values.len();
+    let n = r.values.len();
     if n == 0 {
         return Err(usage("No values to check.", "Pass at least one value."));
     }
@@ -99,23 +67,17 @@ fn read(args: JsonObject) -> Result<(Vec<String>, Options), Error> {
         let message = format!("{n} values; at most 1,000 per call.");
         return Err(usage(message, "Split the list."));
     }
-    if a.live && n > MAX_LIVE {
+    if r.live && n > MAX_LIVE {
         let message = format!("{n} values; at most 100 per call with live true.");
         return Err(usage(message, "Split the list, or set live to false."));
     }
-    let o = Options {
-        kind: check::kind(&a.kind)?,
-        region: a.region.as_deref().map(phone::region).transpose()?,
-        live: a.live,
-        requester: a.requester_vat,
-        ..Options::default()
-    };
-    Ok((a.values, o))
+    let o = r.options()?;
+    Ok((r.values, o))
 }
 
 /// The tool's arguments, closed to names it doesn't define.
 fn input() -> Arc<JsonObject> {
-    let mut schema = schema::<Args>(SchemaSettings::draft2020_12());
+    let mut schema = schema::<Request>(SchemaSettings::draft2020_12());
     Arc::make_mut(&mut schema).insert("additionalProperties".into(), false.into());
     schema
 }

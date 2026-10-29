@@ -6,11 +6,8 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-use serde::Deserialize;
-
-use crate::check::{self, Options, failure, usage};
+use crate::check::{self, Request, failure, usage};
 use crate::item::Error;
-use crate::phone;
 
 const PAGE: &str = include_str!("ui.html");
 /// The most a request may send in headers.
@@ -223,19 +220,6 @@ fn respond(reader: &mut BufReader<io::Take<&TcpStream>>, port: u16) -> io::Resul
     }
 }
 
-/// What the page sends: the field's lines and the form's settings.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Request {
-    values: Vec<String>,
-    #[serde(rename = "type")]
-    kind: Option<String>,
-    #[serde(default)]
-    live: bool,
-    region: Option<String>,
-    requester_vat: Option<String>,
-}
-
 /// The CLI's `--json` object for the request.
 fn answer(body: &[u8]) -> Result<String, Error> {
     let r: Request = serde_json::from_slice(body)
@@ -247,14 +231,7 @@ fn answer(body: &[u8]) -> Result<String, Error> {
         let message = "Live checks take at most 100 values at a time.";
         return Err(usage(message, "Split the list, or turn off Live check."));
     }
-    let o = Options {
-        kind: check::kind(r.kind.as_deref().unwrap_or("auto"))?,
-        region: r.region.as_deref().map(phone::region).transpose()?,
-        live: r.live,
-        requester: r.requester_vat,
-        ..Options::default()
-    };
-    let report = check::run(&r.values, &o)?;
+    let report = check::run(&r.values, &r.options()?)?;
     Ok(serde_json::to_string(&report).expect("plain data"))
 }
 
