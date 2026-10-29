@@ -1,5 +1,6 @@
 pub mod email;
 pub mod iban;
+pub mod ids;
 pub mod item;
 pub mod phone;
 pub mod vat;
