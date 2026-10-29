@@ -6,6 +6,7 @@ pub mod ids;
 pub mod interactive;
 pub mod item;
 pub mod live;
+pub mod mcp;
 pub mod peppol;
 pub mod phone;
 pub mod source {

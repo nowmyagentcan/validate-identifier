@@ -6,6 +6,7 @@ use std::io::Write;
 use std::net::SocketAddr;
 
 use rlibphonenumber::enums::Region;
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::detect::{ambiguous, detect, found};
@@ -41,7 +42,7 @@ pub struct Options {
     pub dns: Option<SocketAddr>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct Report {
     pub results: Vec<Item>,
     pub summary: Summary,
@@ -50,6 +51,15 @@ pub struct Report {
 
 pub fn usage(message: impl Into<String>, hint: &'static str) -> Error {
     Error::new("usage", message, Some(hint))
+}
+
+/// The error object the page and the MCP server answer with.
+pub fn failure(error: &Error) -> String {
+    #[derive(Serialize)]
+    struct Failure<'a> {
+        error: &'a Error,
+    }
+    serde_json::to_string(&Failure { error }).expect("plain data")
 }
 
 /// The type named `name`, `None` for auto.

@@ -172,7 +172,7 @@ fn command(s: &mut Session, line: &str) -> Result<String, Error> {
             "Phone region: none".into()
         }
         "/region" => {
-            let region = phone::region(&arg.to_ascii_uppercase())?;
+            let region = phone::region(arg)?;
             s.region = Some(region);
             format!("Phone region: {region} (for numbers without +)")
         }

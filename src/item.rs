@@ -1,7 +1,8 @@
+use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     Iban,
@@ -87,7 +88,7 @@ pub fn compact(raw: &str) -> String {
         .collect()
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     Valid,
@@ -99,7 +100,7 @@ pub enum Status {
     NotConfigured,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Checked {
     Offline,
@@ -107,7 +108,7 @@ pub enum Checked {
 }
 
 /// An input or usage error: what is wrong and, when there is one, what to do.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct Error {
     pub code: &'static str,
     pub message: String,
@@ -124,7 +125,7 @@ impl Error {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct Check {
     pub name: &'static str,
     pub pass: Option<bool>,
@@ -149,7 +150,7 @@ pub fn a(code: &str) -> String {
     format!("{} {code}", if an { "an" } else { "a" })
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct Warning {
     pub code: &'static str,
     pub message: String,
@@ -181,13 +182,13 @@ impl Found {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, JsonSchema)]
 pub struct Offline {
     pub valid: bool,
     pub checks: Vec<Check>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, JsonSchema)]
 pub struct Item {
     pub input: String,
     #[serde(rename = "type")]
@@ -232,7 +233,7 @@ impl Item {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LiveStatus {
     Active,
@@ -244,7 +245,7 @@ pub enum LiveStatus {
 }
 
 /// A registry's answer for one value (spec §2.4 `live`).
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, JsonSchema)]
 pub struct Live {
     pub source: &'static str,
     pub status: LiveStatus,
@@ -351,7 +352,7 @@ impl Item {
     }
 }
 
-#[derive(Debug, Default, PartialEq, Serialize)]
+#[derive(Debug, Default, PartialEq, Serialize, JsonSchema)]
 pub struct Summary {
     pub total: usize,
     pub valid: usize,
@@ -395,7 +396,7 @@ impl Summary {
 }
 
 /// The data versions every result carries.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct Data {
     pub version: &'static str,
     pub phone_metadata: &'static str,

@@ -10,7 +10,7 @@ use validate_identifier::check::{self, Options, usage};
 use validate_identifier::interactive::{self, Session};
 use validate_identifier::item::Error;
 use validate_identifier::live;
-use validate_identifier::{phone, text};
+use validate_identifier::{mcp, phone, text};
 
 static VERSION: LazyLock<String> = LazyLock::new(validate_identifier::version);
 
@@ -65,40 +65,45 @@ enum Command {
         override_usage = "validate-identifier check <VALUE>... [OPTIONS]
        validate-identifier check -f <FILE> [OPTIONS]"
     )]
-    Check {
-        /// Values to check
-        #[arg(
-            value_name = "VALUE",
-            required_unless_present = "file",
-            conflicts_with = "file"
-        )]
-        values: Vec<String>,
-        /// Identifier type: auto, iban, vat, phone, email, lei, abn, uid, eori, peppol
-        #[arg(short = 't', long = "type", value_name = "T", default_value = "auto",
+    Check(CheckArgs),
+    /// Run the MCP server on stdio
+    Mcp,
+}
+
+#[derive(clap::Args)]
+struct CheckArgs {
+    /// Values to check
+    #[arg(
+        value_name = "VALUE",
+        required_unless_present = "file",
+        conflicts_with = "file"
+    )]
+    values: Vec<String>,
+    /// Identifier type: auto, iban, vat, phone, email, lei, abn, uid, eori, peppol
+    #[arg(short = 't', long = "type", value_name = "T", default_value = "auto",
               value_parser = TYPES, hide_possible_values = true)]
-        kind: String,
-        /// Ask the official registries over the network
-        #[arg(short, long)]
-        live: bool,
-        /// Your own VAT number, for a VIES or HMRC consultation number
-        #[arg(long, value_name = "VAT")]
-        requester: Option<String>,
-        /// DNS server for email and Peppol lookups
-        #[arg(long, value_name = "IP[:PORT]")]
-        dns: Option<String>,
-        /// Region for phone numbers without +
-        #[arg(short, long, value_name = "CC")]
-        region: Option<String>,
-        /// Read values from a file, - for stdin
-        #[arg(short, long, value_name = "FILE")]
-        file: Option<PathBuf>,
-        /// Print one JSON object
-        #[arg(long)]
-        json: bool,
-        /// Show requests and timings on stderr (secrets hidden)
-        #[arg(long)]
-        debug: bool,
-    },
+    kind: String,
+    /// Ask the official registries over the network
+    #[arg(short, long)]
+    live: bool,
+    /// Your own VAT number, for a VIES or HMRC consultation number
+    #[arg(long, value_name = "VAT")]
+    requester: Option<String>,
+    /// DNS server for email and Peppol lookups
+    #[arg(long, value_name = "IP[:PORT]")]
+    dns: Option<String>,
+    /// Region for phone numbers without +
+    #[arg(short, long, value_name = "CC")]
+    region: Option<String>,
+    /// Read values from a file, - for stdin
+    #[arg(short, long, value_name = "FILE")]
+    file: Option<PathBuf>,
+    /// Print one JSON object
+    #[arg(long)]
+    json: bool,
+    /// Show requests and timings on stderr (secrets hidden)
+    #[arg(long)]
+    debug: bool,
 }
 
 /// A file is read whole up to this size.
@@ -142,8 +147,8 @@ fn read_values(path: &Path) -> Result<Vec<String>, Error> {
 }
 
 /// The report as JSON or text, and its exit code.
-fn run(command: Command) -> Result<(String, u8), Error> {
-    let Command::Check {
+fn run(args: CheckArgs) -> Result<(String, u8), Error> {
+    let CheckArgs {
         values,
         kind,
         live,
@@ -153,7 +158,7 @@ fn run(command: Command) -> Result<(String, u8), Error> {
         file,
         json,
         debug,
-    } = command;
+    } = args;
     live::set_debug(debug);
     let start = Instant::now();
     let values = match file {
@@ -264,11 +269,15 @@ fn main() -> ExitCode {
     if std::env::args_os().len() == 1 {
         return interactive();
     }
-    match run(Cli::parse().command) {
+    let answer = match Cli::parse().command {
+        Command::Check(args) => run(args),
+        Command::Mcp => mcp::serve().map(|()| (String::new(), 0)),
+    };
+    match answer {
         Ok((out, code)) => emit(&out, code),
         Err(e) => {
             fail(&e);
-            ExitCode::from(if e.code == "io" { 3 } else { 2 })
+            ExitCode::from(if e.code == "usage" { 2 } else { 3 })
         }
     }
 }
