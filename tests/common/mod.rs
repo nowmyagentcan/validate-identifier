@@ -86,13 +86,18 @@ impl Mock {
         Mock { url, log }
     }
 
+    /// Every source's base URL override, pointing here.
+    pub fn env(&self) -> Vec<(&'static str, &str)> {
+        SOURCES.iter().map(|&v| (v, self.url.as_str())).collect()
+    }
+
     pub fn requests(&self) -> Vec<Request> {
         self.log.lock().unwrap().clone()
     }
 
     /// Runs the binary with every source pointed here; exit code, stdout, stderr.
     pub fn run(&self, args: &[&str], env: &[(&str, &str)]) -> (i32, String, String) {
-        let mut all: Vec<(&str, &str)> = SOURCES.iter().map(|&v| (v, self.url.as_str())).collect();
+        let mut all = self.env();
         all.extend_from_slice(env);
         let (code, out, err) = vi(args, &all);
         for secret in [
@@ -176,8 +181,8 @@ fn serve(
     Ok(())
 }
 
-/// Runs the binary without any proxy, credential or source override from this machine.
-pub fn vi(args: &[&str], env: &[(&str, &str)]) -> (i32, String, String) {
+/// The binary without any proxy, credential or source override from this machine.
+pub fn command(args: &[&str], env: &[(&str, &str)]) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_validate-identifier"));
     cmd.args(args).stdin(Stdio::null());
     for (name, _) in std::env::vars() {
@@ -191,7 +196,12 @@ pub fn vi(args: &[&str], env: &[(&str, &str)]) -> (i32, String, String) {
         }
     }
     cmd.env("NO_COLOR", "1").envs(env.iter().copied());
-    let out = cmd.output().unwrap();
+    cmd
+}
+
+/// Runs the binary as `command` sets it up; exit code, stdout, stderr.
+pub fn vi(args: &[&str], env: &[(&str, &str)]) -> (i32, String, String) {
+    let out = command(args, env).output().unwrap();
     let text = |b: Vec<u8>| String::from_utf8(b).unwrap();
     (
         out.status.code().unwrap(),
