@@ -39,7 +39,12 @@ fn parse(v: &str) -> Result<Parsed<'_>, (usize, Error)> {
         let message = "The part before @ isn't valid (dot at the start or end, two dots, or a forbidden character).";
         syntax("email_local", message, None)
     };
-    if v.contains(['<', '>']) {
+    // A quoted local part may hold any character; a display name is outside it.
+    let unquoted = match v.starts_with('"') {
+        true => quoted_end(v).map_or(v, |end| &v[end + 1..]),
+        false => v,
+    };
+    if unquoted.contains(['<', '>']) {
         return syntax(
             "email_display_name",
             "Pass only the address, without a name.",

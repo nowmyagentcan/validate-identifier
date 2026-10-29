@@ -917,7 +917,6 @@ fn item_errors_of_a_known_type_keep_every_details_key() {
 }
 
 #[test]
-#[ignore = "known bug: F10"]
 fn accepts_quoted_local_parts_with_angle_brackets() {
     for value in [r#""a<b"@example.com"#, r#""a>b"@example.com"#] {
         let (code, r) = item(value, &["-t", "email"]);
@@ -925,6 +924,8 @@ fn accepts_quoted_local_parts_with_angle_brackets() {
         assert_eq!(r["warnings"][0]["code"], "quoted_local_part");
     }
     let (_, r) = item("Jane <jane@example.com>", &[]);
+    assert_eq!(r["error"]["code"], "email_display_name");
+    let (_, r) = item(r#""Jane" <jane@example.com>"#, &["-t", "email"]);
     assert_eq!(r["error"]["code"], "email_display_name");
 }
 
