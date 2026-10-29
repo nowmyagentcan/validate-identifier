@@ -2038,33 +2038,29 @@ fn never_follows_or_prints_a_password_in_an_smp_redirect() {
         "https://user:pa55word@127.0.0.1:1/smp/x",
         "//user:pa55word@127.0.0.1:1/smp/x",
     ] {
-        refuses_smp_redirect(to);
+        let mock =
+            Mock::start(move |_| Answer::Reply(302, vec![("Location", to.into())], String::new()));
+        let stub = sml_stub(&["0208:0000000097"], &[], format!("{}/smp/", mock.url));
+        let args = [
+            "check",
+            "0208:0000000097",
+            "--live",
+            "--json",
+            "--debug",
+            "--dns",
+            &stub.addr,
+        ];
+        let (code, out, err) = mock.run(&args, &[ZONE]);
+        assert_eq!((code, mock.requests().len()), (0, 1));
+        assert!(
+            out.contains("a redirect to an address we don't follow"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("pa55word") && !err.contains("pa55word"),
+            "{out}{err}"
+        );
     }
-}
-
-fn refuses_smp_redirect(to: &'static str) {
-    let mock =
-        Mock::start(move |_| Answer::Reply(302, vec![("Location", to.into())], String::new()));
-    let stub = sml_stub(&["0208:0000000097"], &[], format!("{}/smp/", mock.url));
-    let args = [
-        "check",
-        "0208:0000000097",
-        "--live",
-        "--json",
-        "--debug",
-        "--dns",
-        &stub.addr,
-    ];
-    let (code, out, err) = mock.run(&args, &[ZONE]);
-    assert_eq!((code, mock.requests().len()), (0, 1));
-    assert!(
-        out.contains("a redirect to an address we don't follow"),
-        "{out}"
-    );
-    assert!(
-        !out.contains("pa55word") && !err.contains("pa55word"),
-        "{out}{err}"
-    );
 }
 
 #[test]
