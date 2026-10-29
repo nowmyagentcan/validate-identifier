@@ -2084,3 +2084,133 @@ fn a_silent_sml_is_unavailable_never_not_registered() {
     );
     assert_eq!(r["live"]["data"]["participants"], json!([]));
 }
+
+#[test]
+#[ignore = "known bug: F01"]
+fn vies_answers_that_did_not_succeed_are_never_a_verdict() {
+    for body in [
+        json!({"valid": false, "actionSucceed": false, "errorWrappers": []}),
+        json!({"valid": true, "actionSucceed": false}),
+    ] {
+        let mock = Mock::start(move |_| reply(200, body.to_string()));
+        let (code, v) = mock.json(&["check", "DE136695976", "--live"], &[]);
+        assert_eq!(
+            (code, first(&v)["status"].as_str()),
+            (3, Some("unavailable")),
+            "{v}"
+        );
+    }
+    let failed = json!({"actionSucceed": false, "errorWrappers": [{"error": "INVALID_INPUT"}]});
+    let mock = Mock::start(move |_| reply(500, failed.to_string()));
+    let (code, v) = mock.json(&["check", "DE136695976", "--live"], &[]);
+    assert_eq!(
+        (code, first(&v)["status"].as_str()),
+        (3, Some("unavailable"))
+    );
+}
+
+#[test]
+#[ignore = "known bug: F02"]
+fn abn_answers_in_another_shape_are_unavailable() {
+    for body in [
+        "callback([])",
+        "[]",
+        "null",
+        "{}",
+        r#"callback({"Abn":"51824753556"})"#,
+    ] {
+        let mock = Mock::start(move |_| reply(200, body));
+        let (code, v) = mock.json(&["check", "51824753556", "--live"], &[GUID]);
+        assert_eq!(
+            (code, first(&v)["status"].as_str()),
+            (3, Some("unavailable")),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "known bug: F03"]
+fn gleif_records_without_their_statuses_are_unavailable() {
+    let id = lei(1);
+    for attributes in [
+        json!({"lei": id}),
+        json!({"lei": id, "entity": {"status": 1}, "registration": {"status": ["ISSUED"]}}),
+    ] {
+        let body = json!({"data": [{"attributes": attributes}]}).to_string();
+        let mock = Mock::start(move |_| reply(200, body.clone()));
+        let (code, v) = mock.json(&["check", &id, "--live"], &[]);
+        assert_eq!(
+            (code, first(&v)["status"].as_str()),
+            (3, Some("unavailable")),
+            "{v}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "known bug: F04"]
+fn a_token_that_cannot_be_sent_is_unavailable() {
+    let mock = Mock::start(|r| match r.target.as_str() {
+        "/oauth/token" => reply(200, json!({"access_token": "bad\r\ntoken"}).to_string()),
+        _ => hmrc_ok(),
+    });
+    let (code, out, err) = mock.run(&["check", "GB434031439", "--live", "--json"], &HMRC_CREDS);
+    assert_eq!(code, 3, "{err}");
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(first(&v)["status"], "unavailable");
+}
+
+#[test]
+#[ignore = "known bug: F05"]
+fn refuses_base_url_overrides_that_are_not_urls() {
+    let mock = Mock::start(|_| reply(200, vies_ok("EXAMPLE GMBH")));
+    for url in [
+        format!("{}/bad path", mock.url),
+        "https://exa mple.org".into(),
+    ] {
+        let (code, out, err) = mock.run(
+            &["check", "DE136695976", "--live"],
+            &[("VALIDATE_IDENTIFIER_VIES_URL", &url)],
+        );
+        assert_eq!((code, out.as_str()), (2, ""), "{url}: {err}");
+        assert!(err.starts_with("✗ VALIDATE_IDENTIFIER_VIES_URL"), "{err}");
+    }
+    assert!(mock.requests().is_empty());
+}
+
+#[test]
+#[ignore = "known bug: F06"]
+fn never_prints_a_secret_that_a_registry_sends_back() {
+    let secret = HMRC_CREDS[1].1;
+    let mock = Mock::start(move |_| reply(401, json!({"error": secret}).to_string()));
+    // `run` fails the test when a secret reaches stdout or stderr.
+    for json in [&[][..], &["--json"], &["--json", "--debug"]] {
+        let args = [&["check", "GB434031439", "--live"][..], json].concat();
+        mock.run(&args, &HMRC_CREDS);
+    }
+}
+
+#[test]
+#[ignore = "known bug: F18"]
+fn does_not_ask_again_after_an_answer_it_cannot_decode() {
+    let mock = Mock::start(|_| Answer::Bytes(vec![0xff, 0xfe]));
+    let (code, v) = mock.json(&["check", "DE136695976", "--live"], &[]);
+    assert_eq!((code, mock.requests().len()), (3, 1));
+    assert_eq!(
+        first(&v)["message"],
+        "VIES sent a response we couldn't read."
+    );
+}
+
+#[test]
+#[ignore = "known bug: T02"]
+fn names_the_proxy_it_could_not_reach() {
+    let proxy = closed_port();
+    let (code, out, _) = vi(
+        &["check", "DE136695976", "--live"],
+        &[("HTTPS_PROXY", &proxy)],
+    );
+    assert_eq!(code, 3);
+    assert!(out.contains("proxy error at 127.0.0.1"), "{out}");
+}

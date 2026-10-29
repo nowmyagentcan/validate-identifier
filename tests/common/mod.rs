@@ -59,6 +59,8 @@ impl Request {
 
 pub enum Answer {
     Reply(u16, Vec<(&'static str, String)>, String),
+    /// A 200 whose body is these bytes, UTF-8 or not.
+    Bytes(Vec<u8>),
     /// Keeps the connection open without answering.
     Hang,
     /// Closes the connection without answering.
@@ -171,6 +173,13 @@ fn serve(
                 head += &format!("{name}: {value}\r\n");
             }
             let _ = stream.write_all(format!("{head}\r\n{body}").as_bytes());
+        }
+        Answer::Bytes(body) => {
+            let head = format!(
+                "HTTP/1.1 200 X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(&[head.as_bytes(), &body].concat());
         }
         Answer::Hang => {
             thread::spawn(move || {
