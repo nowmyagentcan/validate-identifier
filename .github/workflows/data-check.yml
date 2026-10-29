@@ -1,6 +1,6 @@
 # Monthly: compares the bundled phone data, the IBAN and phone engines and the Peppol code list
-# with upstream, and opens one issue per stale source. Updating stays a reviewed commit and a
-# patch release.
+# with upstream, and asks each free live source about an identifier it holds. Opens one issue
+# per stale or failing source; updating stays a reviewed commit and a patch release.
 name: data-check
 on:
   schedule:
@@ -46,3 +46,33 @@ jobs:
           echo "Peppol code list: built from v$have, latest v$latest"
           [ "$have" = "$latest" ] || stale "Data update: Peppol code list v$latest" \
             "The Peppol scheme table in src/peppol.rs follows code list v$have. Compare the participant identifier schemes of v$latest, update the table and PEPPOL_CODE_LIST in src/lib.rs, run the tests, commit, and release a patch version."
+  live:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --locked
+      - name: Ask each live source about an identifier it holds
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          stale() {
+            if gh issue list --state open --limit 500 --json title --jq '.[].title' | grep -qxF "$1"; then
+              echo "open already: $1"
+            else
+              gh issue create --title "$1" --body "$2"
+            fi
+          }
+          live() {
+            src=$1; shift
+            out=$(target/release/validate-identifier check "$@" --live --json || true)
+            status=$(jq -r '.results[0].status' <<< "$out")
+            echo "$src: $status"
+            [ "$status" = valid ] || stale "Live source check failed: $src" \
+              "\`validate-identifier check $* --live\` answered \`$status\`: $(jq -r '.results[0].message' <<< "$out") Run it again with --debug; if the source has changed its answers, update its module in src/source/ and the tests."
+          }
+          live VIES IE6388047V
+          live 'UID register' CHE-116.281.710
+          live GLEIF 5493001KJTIIGC8Y1R12
+          live EOS IE8256796U -t eori
+          live Peppol 0208:0202239951
