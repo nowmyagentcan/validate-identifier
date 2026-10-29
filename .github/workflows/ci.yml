@@ -26,3 +26,16 @@ jobs:
       - uses: actions/checkout@v7
       - uses: taiki-e/install-action@cargo-deny
       - run: cargo deny check licenses
+  pins:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo fetch --locked
+      - name: The printed data versions match the locked engines
+        run: |
+          meta=$(cargo metadata --locked --format-version 1)
+          crate_dir() { dirname "$(jq -r --arg n "$1" '.packages[] | select(.name == $n) | .manifest_path' <<< "$meta")"; }
+          constant() { sed -n "s/^pub const $1: &str = \"\(.*\)\";/\1/p" src/lib.rs; }
+          grep -F "Used metadata version:** \`v$(constant PHONE_METADATA)\`" "$(crate_dir rlibphonenumber)/Readme.md"
+          grep -Fx "iban_registry_v$(constant IBAN_REGISTRY).txt" "$(crate_dir iban_validation_rs)/data/iban_sourcefile.txt"

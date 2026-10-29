@@ -7,6 +7,10 @@ description = "Check IBANs, VAT numbers, phone numbers, emails, LEIs and Peppol 
 repository = "https://github.com/nowmyagentcan/validate-identifier"
 publish = false
 
+[dependencies]
+iban_validation_rs = "=0.1.30"
+rlibphonenumber = { version = "=2.2.15", default-features = false, features = ["global_static", "lite", "protox"] }
+
 [profile.release]
 opt-level = "z"
 lto = true
