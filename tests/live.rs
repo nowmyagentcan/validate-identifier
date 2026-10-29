@@ -2386,11 +2386,10 @@ fn gleif_records_without_an_lei_are_unavailable() {
 }
 
 #[test]
-#[ignore = "known bug: R3-F02"]
-fn gleif_records_with_an_empty_lei_are_unavailable() {
+fn gleif_records_without_an_lei_asked_for_are_unavailable() {
     let id = lei(1);
-    for empty in ["", " "] {
-        let body = json!({"data": [{"attributes": {"lei": empty}}]}).to_string();
+    for other in [String::new(), " ".into(), lei(2)] {
+        let body = json!({"data": [{"attributes": {"lei": other}}]}).to_string();
         let mock = Mock::start(move |_| reply(200, body.clone()));
         let (code, v) = mock.json(&["check", &id, "--live"], &[]);
         let status = first(&v)["status"].as_str();

@@ -39,9 +39,11 @@ pub fn ask(c: &mut Client, items: &[&Item]) -> Result<Vec<Live>, Error> {
             (200, Some(data)) => {
                 let by_lei = data.iter().map(|d| {
                     let a = &d["attributes"];
-                    Some((a["lei"].as_str()?.to_string(), a.clone()))
+                    let lei = a["lei"].as_str().filter(|l| leis.contains(l))?;
+                    Some((lei.to_string(), a.clone()))
                 });
-                // A record without its LEI could be any of them: the answer is unreadable.
+                // A record without one of the LEIs asked for could be any of them: the answer
+                // is unreadable.
                 let Some(by_lei) = by_lei.collect::<Option<HashMap<_, _>>>() else {
                     return Ok(unreadable(&GLEIF, &r.body));
                 };
