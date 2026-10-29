@@ -2,7 +2,7 @@
 //! overrides, pacing per source, a 1 MiB answer cap and no redirects; and DNS lookups.
 //! `--debug` lines go to stderr with every secret replaced by REDACTED.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -38,6 +38,9 @@ const LIMIT: u64 = 1 << 20;
 
 static DEBUG: AtomicBool = AtomicBool::new(false);
 static SECRETS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Each source's last request start in this process, so pacing holds across the runs of an
+/// interactive session, the page and the MCP server too.
+static LAST: Mutex<BTreeMap<&str, Instant>> = Mutex::new(BTreeMap::new());
 
 pub fn set_debug(on: bool) {
     DEBUG.store(on, Ordering::Relaxed);
@@ -45,8 +48,9 @@ pub fn set_debug(on: bool) {
 
 /// Keeps `s` out of every `--debug` line.
 pub fn secret(s: &str) {
-    if !s.is_empty() {
-        SECRETS.lock().unwrap().push(s.into());
+    let mut secrets = SECRETS.lock().unwrap();
+    if !s.is_empty() && !secrets.iter().any(|known| known == s) {
+        secrets.push(s.into());
     }
 }
 
@@ -84,7 +88,6 @@ pub struct Client {
     lookups_failed: u32,
     agent: Agent,
     bases: HashMap<&'static str, String>,
-    last: HashMap<&'static str, Instant>,
     start: Instant,
 }
 
@@ -119,7 +122,6 @@ impl Client {
             lookups_failed: 0,
             agent,
             bases,
-            last: HashMap::new(),
             start: Instant::now(),
         })
     }
@@ -171,11 +173,15 @@ impl Client {
 
     /// `send`, with a failure as the transport's own error.
     pub fn fetch(&mut self, s: &Source, req: Request<Vec<u8>>) -> Result<Reply, ureq::Error> {
-        if let Some(last) = self.last.get(s.name) {
-            std::thread::sleep(s.gap.saturating_sub(last.elapsed()));
-        }
-        let at = Instant::now();
-        self.last.insert(s.name, at);
+        let at = {
+            let mut last = LAST.lock().unwrap();
+            if let Some(at) = last.get(s.name) {
+                std::thread::sleep(s.gap.saturating_sub(at.elapsed()));
+            }
+            let now = Instant::now();
+            last.insert(s.name, now);
+            now
+        };
         let since = (at - self.start).as_secs_f64();
         debug(format!(
             "{} {} {} (+{since:.3} s)",
@@ -436,7 +442,30 @@ mod tests {
             skipped.message,
             "Skipped: this computer's DNS failed twice in a row in this run. This is not a verdict on the number."
         );
-        assert!(c.last.is_empty());
+        assert!(!LAST.lock().unwrap().contains_key(TEST.name));
+    }
+
+    #[test]
+    fn pacing_holds_across_clients() {
+        use std::io::{Read, Write};
+        const PACED: Source = Source {
+            name: "Paced",
+            gap: Duration::from_millis(300),
+            ..TEST
+        };
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", server.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for mut s in server.incoming().flatten() {
+                let _ = s.read(&mut [0; 1024]);
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+            }
+        });
+        let get = || Request::get(&url).body(Vec::new()).unwrap();
+        let start = Instant::now();
+        Client::new(&[]).unwrap().fetch(&PACED, get()).unwrap();
+        Client::new(&[]).unwrap().fetch(&PACED, get()).unwrap();
+        assert!(start.elapsed() >= PACED.gap);
     }
 
     #[test]
