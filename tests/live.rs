@@ -1154,6 +1154,7 @@ fn without_a_network_every_live_check_is_unavailable_and_keeps_its_offline_resul
     let mut env: Vec<(&str, &str)> = common::SOURCES.iter().map(|&v| (v, url.as_str())).collect();
     env.extend([HMRC_CREDS[0], HMRC_CREDS[1], GUID]);
     let leis = lei(1);
+    let dns = common::closed_udp_port();
     let values = [
         "DE136695976",
         "GB434031439",
@@ -1162,10 +1163,19 @@ fn without_a_network_every_live_check_is_unavailable_and_keeps_its_offline_resul
         &leis,
         "XI1234567890001",
         "GB2204302310001",
+        "jane@example.com",
+        "0208:0202239951",
     ];
     let (code, out, _) = vi(
         &[
-            &["check", "--live", "--json", "DE44500105175407324931"][..],
+            &[
+                "check",
+                "--live",
+                "--json",
+                "--dns",
+                &dns,
+                "DE44500105175407324931",
+            ][..],
             &values,
         ]
         .concat(),
@@ -1188,7 +1198,9 @@ fn without_a_network_every_live_check_is_unavailable_and_keeps_its_offline_resul
             "ABN Lookup",
             "GLEIF",
             "EOS",
-            "HMRC"
+            "HMRC",
+            "DNS",
+            "Peppol SML"
         ]
     );
     for r in &results[1..] {
@@ -2016,4 +2028,59 @@ fn a_registered_participant_stays_valid_when_its_smp_fails() {
             Value::Null
         );
     }
+}
+
+#[test]
+fn paces_smp_and_hmrc_eori_requests() {
+    let mock = Mock::start(|r| match r.target.as_str() {
+        "/customs/eori/lookup/check-multiple-eori" => {
+            let eoris = r.json()["eoris"].as_array().unwrap().clone();
+            let answers: Vec<Value> = eoris
+                .iter()
+                .map(|e| json!({"eori": e, "valid": true, "processingDate": "2026-10-29T14:17:13+00:00"}))
+                .collect();
+            reply(200, Value::from(answers).to_string())
+        }
+        _ => reply(200, service_group()),
+    });
+    const IDS: &[&str] = &["0208:0000000097", "0208:0000000098", "0208:0000000099"];
+    let stub = sml_stub(IDS, &[], format!("{}/smp/", mock.url));
+    let eoris: Vec<String> = (0..11).map(|n| format!("GB{n:013}")).collect();
+    let eoris: Vec<&str> = eoris.iter().map(String::as_str).collect();
+    let (code, _, err) = mock.run(
+        &[
+            &["check", "--live", "--debug", "--dns", &stub.addr][..],
+            IDS,
+            &eoris,
+        ]
+        .concat(),
+        &[ZONE],
+    );
+    assert_eq!(code, 0, "{err}");
+    for (source, gap, n) in [("Peppol SMP", 0.499, 3), ("HMRC", 0.399, 2)] {
+        let at = starts(&err, source);
+        assert_eq!(at.len(), n, "{source}: {err}");
+        assert!(
+            at.windows(2).all(|w| w[1] - w[0] >= gap),
+            "{source}: {at:?}"
+        );
+    }
+}
+
+#[test]
+fn a_silent_sml_is_unavailable_never_not_registered() {
+    let stub = DnsStub::start(|_, _| Dns::Silence);
+    let start = std::time::Instant::now();
+    let (code, v) = Mock::start(|_| reply(500, "")).json(
+        &["check", "0208:0202239951", "--live", "--dns", &stub.addr],
+        &[ZONE],
+    );
+    assert!(start.elapsed().as_secs_f64() < 15.0);
+    let r = first(&v);
+    assert_eq!((code, r["status"].as_str()), (3, Some("unavailable")));
+    assert_eq!(
+        r["message"],
+        "Couldn't look up the Peppol SML: timeout. This is not a verdict on registration."
+    );
+    assert_eq!(r["live"]["data"]["participants"], json!([]));
 }

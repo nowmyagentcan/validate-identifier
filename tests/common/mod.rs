@@ -272,3 +272,12 @@ impl DnsStub {
 pub fn name(s: &str) -> Name {
     Name::from_ascii(s).unwrap()
 }
+
+/// A loopback UDP address where nothing listens, for `--dns`.
+pub fn closed_udp_port() -> String {
+    UdpSocket::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .to_string()
+}
