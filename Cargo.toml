@@ -1,0 +1,15 @@
+[package]
+name = "validate-identifier"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Check IBANs, VAT numbers, phone numbers, emails, LEIs and Peppol IDs, offline or against the official registries"
+repository = "https://github.com/nowmyagentcan/validate-identifier"
+publish = false
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
